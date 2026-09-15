@@ -1,6 +1,8 @@
 # API Switch
 
 一个**纯本地、绿色免安装**的 Windows 桌面小工具：为 AI 编程工具（Codex / Qoder / Trae / Qoder CN）**一键配置与切换自定义模型供应商**（中转站 / 自建 API），省去手动改配置文件的麻烦。
+<img width="1384" height="991" alt="image" src="https://github.com/user-attachments/assets/4b7a7218-93ac-478e-bf80-197549af0347" />
+
 
 
 ## 功能一览
