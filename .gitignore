@@ -1,0 +1,9 @@
+# 本地净化映射表：包含母版 exe 中的真实字符串（旧名称/URL/端口），绝不入库
+tools/replacements.json
+
+# 构建产物与缓存
+__pycache__/
+*.pyc
+*.new.exe
+_work/
+APISwitch-v*.exe

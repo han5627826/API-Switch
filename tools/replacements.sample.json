@@ -1,0 +1,18 @@
+{
+  "_comment": "复制本文件为同目录的 replacements.json 并填入净化映射（replacements.json 已被 .gitignore 排除，切勿提交）。下列 key 是母版 exe 中「旧」的字符串、value 是净化后的字符串；此处全部为虚构示意：",
+  "APP_STR": {
+    "旧工具名 - 桌面窗口入口\n...": "新工具名 - 桌面窗口入口\n..."
+  },
+  "SERVER_STR": {
+    "旧本地数据目录名": "APISwitch",
+    "示例：若该站点需科学上网（如 api.old-relay.example），请先在「网络设置」中填写代理地址后重试": "示例：若该站点无法直连，请先在「网络设置」中填写本地代理地址后重试",
+    "旧品牌 docstring 文案": "新品牌 docstring 文案"
+  },
+  "HTML_REPL": [
+    ["<title>旧工具名</title>", "<title>新工具名</title>"],
+    ["<h1>旧工具名</h1>", "<h1>新工具名</h1>"],
+    ["placeholder=\"例如：OldRelay\"", "placeholder=\"例如：My Provider\""],
+    ["留空=直连；例如 http://127.0.0.1:8080", "留空=直连；例如 http://127.0.0.1:7890"]
+  ],
+  "UPDATE_REPO": "your-github-username/your-repo"
+}
