@@ -7,6 +7,7 @@ let selected = null;          // 当前详情页展示的供应商 id
 let editingId = null;         // 弹窗正在编辑的 id（null=新增）
 let draftModels = [];         // 弹窗内模型集合（对象 {id, on}）
 const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
 
 /* ---------- 模型规格自动识别（上下文窗口 / 最大输出） ----------
    内置表来自 models.dev（打包时快照）；启动后再在线拉取最新数据覆盖。 */
@@ -54,14 +55,19 @@ function lookupLimit(modelId) {
 function detectLimits(modelId) {
   if (!modelId) return;
   const hint = $("#f-limits-hint");
+  if (!hint) return;
   const hit = lookupLimit(modelId);
   if (hit) {
     $("#f-ctx").value = hit.ctx;
     $("#f-max").value = hit.out || 32768;
-    if (hint) hint.textContent =
+    hint.textContent =
       `✓ 已自动识别「${modelId}」支持上限：上下文 ${hit.ctx} / 输出 ${hit.out || "?"}（${hit.src}规格表，可手动修改）`;
-  } else if (hint) {
+    hint.style.cssText = "";                       // 恢复默认绿色识别提示样式
+  } else {
     hint.textContent = `未收录「${modelId}」的公开规格，保留当前值，可手动修改`;
+    hint.style.borderColor = "var(--line)";
+    hint.style.background = "var(--field)";
+    hint.style.color = "var(--muted)";
   }
 }
 
@@ -108,32 +114,35 @@ async function refresh(keepSelected) {
   if (!keepSelected || !state.providers.some((p) => p.id === selected)) {
     selected = state.active || (state.providers[0] && state.providers[0].id);
   }
+  renderHome();
   render();
   renderQoder2();
   renderQodercn(false);
   renderZcode();
   renderTrae();
-  renderTargets();
+  renderBanners();
 }
 
 /* ---------------- 顶部模块 Tab ---------------- */
-document.querySelectorAll("#tabs .tab").forEach((btn) => {
+$$("#tabs .tab").forEach((btn) => {
   btn.onclick = () => switchTab(btn.dataset.view);
 });
 function switchTab(view) {
-  document.querySelectorAll("#tabs .tab").forEach((b) => {
+  $$("#tabs .tab").forEach((b) => {
     b.classList.toggle("active", b.dataset.view === view);
   });
-  document.querySelectorAll(".view").forEach((v) => v.classList.add("hidden"));
+  $$(".view").forEach((v) => v.classList.add("hidden"));
   $("#view-" + view).classList.remove("hidden");
+  $("#scroller").scrollTop = 0;
+  if (view === "codex") render();
   if (view === "qoder2") loadQoder2List();
   if (view === "qodercn") loadQodercn();
   if (view === "zcode") loadZcode();
   if (view === "trae") loadTraeModels();
-  if (view === "targets") renderTargets();
+  if (view === "targets") renderHome();
 }
 
-/* ---------------- 导入目标管理 ---------------- */
+/* ---------------- 目标管理（首页） ---------------- */
 const TARGET_DEFS = [
   { key: "codex", name: "Codex / ChatGPT 桌面版", tab: "codex",
     desc: "写入 ~/.codex/config.toml，直接切换生效供应商",
@@ -152,35 +161,163 @@ const TARGET_DEFS = [
     how: "TRAE 页 → 复制模型信息并启动 TRAE → 粘贴添加" },
 ];
 
-function renderTargets() {
-  const grid = $("#targets-grid");
-  if (!grid) return;
+function customProviders() {
+  return state.providers.filter((p) => p.id !== "original");
+}
+
+function renderHome() {
+  renderStats();
+  renderProviderGrid();
+  renderTargetsList();
+  renderCodexConfig();
+}
+
+function renderStats() {
+  const provs = customProviders();
+  $("#stat-providers").textContent = provs.length;
+  $("#stat-models").textContent = provs.reduce((n, p) => n + (p.models || []).length, 0);
   const t = state.targets || {};
+  const found = TARGET_DEFS.filter((d) => (t[d.key] || {}).installed).length;
+  $("#stat-targets").textContent = found + "/" + TARGET_DEFS.length;
+}
+
+function renderProviderGrid() {
+  const grid = $("#provider-grid");
+  if (!grid) return;
   grid.innerHTML = "";
+  const t = state.targets || {};
+  const importable = TARGET_DEFS.filter((d) => d.key !== "codex" && (t[d.key] || {}).installed).length;
+  for (const p of state.providers) {
+    const isOriginal = p.id === "original";
+    const isActive = p.id === state.active;
+    const card = document.createElement("div");
+    card.className = "pv-card" + (p.id === selected ? " selected" : "");
+    let badge = "";
+    if (isActive) badge = '<span class="badge badge-ok">使用中</span>';
+    else if (isOriginal) badge = '<span class="badge">原始</span>';
+    else if (importable > 0) badge = `<span class="badge badge-brand">可导入 ${importable} 处</span>`;
+    const models = (p.models || []).length;
+    const meta = isOriginal
+      ? '<span class="badge">登录凭据</span>'
+      : `<span class="badge">${models} 模型</span>` +
+        `<span class="badge">${p.wire_api === "chat" ? "Chat" : "Responses"}</span>` +
+        (p.context_window ? `<span class="badge">上下文 ${fmtK(p.context_window)}</span>` : "");
+    const initial = esc((p.name || "?").slice(0, 2).toUpperCase());
+    card.innerHTML = `
+      <div class="pv-top">
+        <div class="pv-id">
+          <div class="pv-avatar ${isOriginal ? "original" : ""}">${initial}</div>
+          <span class="pv-name">${esc(p.name)}</span>
+        </div>${badge}</div>
+      <div class="pv-url mono">${isOriginal ? "ChatGPT 官方账号，原始配置" : esc(p.base_url)}</div>
+      <div class="pv-meta">${meta}
+        ${isOriginal ? "" : `
+        <span class="pv-actions">
+          <button class="icon-btn" data-act="edit" title="编辑">✎</button>
+          <button class="icon-btn" data-act="del" title="删除">🗑</button>
+        </span>`}
+      </div>`;
+    card.onclick = () => { selected = p.id; renderProviderGrid(); render(); };
+    const eb = card.querySelector('[data-act="edit"]');
+    if (eb) eb.onclick = (e) => { e.stopPropagation(); openModal(p); };
+    const db = card.querySelector('[data-act="del"]');
+    if (db) db.onclick = (e) => { e.stopPropagation(); doDelete(p); };
+    grid.appendChild(card);
+  }
+}
+
+function fmtK(n) {
+  n = +n || 0;
+  return n >= 1000 ? (n % 1000 ? (n / 1000).toFixed(1) : n / 1000) + "K" : String(n);
+}
+
+function renderTargetsList() {
+  const box = $("#targets-list");
+  if (!box) return;
+  const t = state.targets || {};
+  box.innerHTML = "";
   for (const def of TARGET_DEFS) {
     const info = t[def.key] || {};
     const inst = !!info.installed;
-    const card = document.createElement("div");
-    card.className = "t-card" + (inst ? "" : " off");
-    card.innerHTML = `
-      <div class="t-head"><b>${esc(def.name)}</b>
-        <span class="badge ${inst ? "" : "gray"}">${inst ? (info.running ? "运行中" : "已检测到") : "未检测到"}</span></div>
-      <div class="t-desc">${esc(def.desc)}</div>
-      <div class="t-hint">用法：${esc(def.how)}</div>
-      <button class="btn tiny ${inst ? "primary" : "ghost"}" ${inst ? "" : "disabled"}>前往导入 →</button>`;
-    card.querySelector("button").onclick = () => {
-      switchTab(def.tab);
-      document.querySelector(`#tabs .tab[data-view="${def.tab}"]`).scrollIntoView();
-    };
-    grid.appendChild(card);
+    const row = document.createElement("button");
+    row.className = "rowlink" + (inst ? "" : " off");
+    const dotColor = inst ? (info.running ? "#059669" : "#0891b2") : "var(--faint)";
+    const status = inst ? (info.running ? "运行中" : "已检测到") : "未检测到";
+    row.innerHTML = `
+      <span class="rl-dot" style="background:${dotColor}"></span>
+      <span class="rl-name">${esc(def.name)}</span>
+      <span class="rl-note mono">${esc(def.desc)}</span>
+      <span class="badge ${inst ? "badge-ok" : "gray"}">${status}</span>
+      <span class="rl-arrow">${inst ? "›" : ""}</span>`;
+    row.title = "用法：" + def.how;
+    if (inst) row.onclick = () => switchTab(def.tab);
+    box.appendChild(row);
   }
+}
+
+function renderCodexConfig() {
+  const box = $("#codex-config");
+  if (!box) return;
+  const p = state.providers.find((x) => x.id === state.active);
+  const models = (p && p.models) || [];
+  const chips = models.slice(0, 6).map((m) => `<span class="chip mono">${esc(m)}</span>`).join("") +
+    (models.length > 6 ? `<span class="chip mono">+${models.length - 6}</span>` : "");
+  box.innerHTML = `
+    <div class="cc-head">
+      <div style="min-width:0">
+        <div class="cc-name">${esc(p ? p.name : "未选择")}
+          ${p ? '<span class="badge badge-ok">使用中</span>' : ""}</div>
+        <div class="cc-url mono">${p ? (p.id === "original" ? "ChatGPT 官方账号，原始配置" : esc(p.base_url)) : "—"}</div>
+      </div>
+      <div class="cc-fmt">
+        ${p && p.id === "original" ? '<div>登录凭据</div>' : `
+        <div>${p ? (p.wire_api === "chat" ? "Chat" : "Responses") + " · " + (p.auth_mode === "authjson" ? "auth.json" : "环境变量") : ""}</div>
+        <div>${p ? esc(p.model || (models[0] || "-")) : ""}${p && p.reasoning_effort ? " · " + esc(p.reasoning_effort) : ""}</div>`}
+      </div>
+    </div>
+    ${models.length ? `<div class="cc-models">${chips}</div>` : ""}
+    <div class="divider"></div>
+    <div class="cc-row"><span class="k">Codex 进程</span><span class="v">
+      <span class="dot ${state.codex_running ? "on" : "off"}"></span>${state.codex_running ? "运行中" : "未运行"}</span></div>
+    <div class="cc-row"><span class="k">配置写入</span><span class="v mono" title="${esc(state.config_file || '~/.codex/config.toml')}">${esc(state.config_file || "~/.codex/config.toml")}</span></div>
+    <div class="cc-actions">
+      <button class="btn ghost" id="home-restart">重启 Codex</button>
+      <button class="btn primary" id="home-switch">切换配置</button>
+    </div>`;
+  $("#home-restart").onclick = restartCodex;
+  $("#home-switch").onclick = () => switchTab("codex");
+}
+
+/* ---------------- 页内横幅（自动识别提示） ---------------- */
+function renderBanners() {
+  const n = customProviders().length;
+  const t = state.targets || {};
+  const st = (k) => {
+    const i = t[k] || {};
+    return i.installed ? (i.running ? "已检测到 · 运行中" : "已检测到 · 未运行") : "未检测到";
+  };
+  const set = (id, html) => { const el = $(id); if (el) el.innerHTML = html; };
+  set("#codex-banner-text",
+    `供应商来自 <b>目标管理 · 供应商库</b>，本页自动识别已录入的 <b>${n}</b> 个供应商 —— 添加与编辑请前往目标管理页。`);
+  set("#q2-banner",
+    `已自动识别供应商库（<b>${n}</b> 个）。选择供应商后勾选模型，一键写入 <span class="mono">~/.qoder/settings.json</span>。`);
+  set("#qn-banner",
+    `已自动识别供应商库（<b>${n}</b> 个）· 写入 <span class="mono">~/.qoder-cn/settings.json</span> 的 providers。`);
+  set("#zc-banner",
+    `已自动识别供应商库（<b>${n}</b> 个）· 导入 ZCode 后在列表中直接「启用」切换。`);
+  set("#t-banner",
+    `已自动识别供应商库（<b>${n}</b> 个）。TRAE Key 为私有加密，仍采用「复制信息 + 手动粘贴」辅助导入。`);
+  const qs = $("#q2-status"); if (qs) qs.textContent = "Qoder：" + st("qoder");
+  const qns = $("#qn-status"); if (qns) qns.textContent = "Qoder CN：" + st("qodercn");
+  const zcs = $("#zc-status"); if (zcs) zcs.textContent = "ZCode：" + st("zcode");
+  const ts = $("#t-status"); if (ts) ts.textContent = "TRAE：" + st("trae");
 }
 
 /* ---------------- 供应商下拉 + 模型勾选（公用） ---------------- */
 function fillProviderSelect(sel) {
   const cur = sel.value;
   sel.innerHTML = "";
-  for (const p of state.providers.filter((x) => x.id !== "original")) {
+  for (const p of customProviders()) {
     const o = document.createElement("option");
     o.value = p.id;
     o.textContent = `${p.name}（${(p.models || []).length} 个模型）`;
@@ -208,14 +345,17 @@ function modelMeta(id) {
 function renderModelChecks(box) {
   box.innerHTML = "";
   const models = providerModels();
-  if (!models.length) { box.innerHTML = '<span class="muted">该供应商暂无模型，请先在 Codex 页获取模型</span>'; return; }
+  if (!models.length) {
+    box.innerHTML = '<span class="muted">该供应商暂无模型 —— 请在「目标管理 · 供应商库」编辑并获取模型</span>';
+    return;
+  }
   for (const id of models) {
     const meta = modelMeta(id);
     const item = document.createElement("label");
     item.className = "model-check on";
     item.dataset.mid = id;
-    item.innerHTML = `<input type="checkbox" checked> ${esc(id)} ` +
-      `<span class="muted">${meta.contextWindow}/${meta.maxOutputTokens}${meta.reasoning ? " · 推理" : ""}${meta.vision ? " · 视觉" : ""}</span>`;
+    item.innerHTML = `<input type="checkbox" checked> <span class="mono">${esc(id)}</span> ` +
+      `<span class="m-meta">${meta.contextWindow}/${meta.maxOutputTokens}${meta.reasoning ? " · 推理" : ""}${meta.vision ? " · 视觉" : ""}</span>`;
     item.onclick = (e) => {
       e.preventDefault();
       item.classList.toggle("on");
@@ -235,8 +375,6 @@ function renderImportBox(provSel, box, statusEl, importBtn, installed, running) 
   providerSel = provSel;
   fillProviderSelect(provSel);
   renderModelChecks(box);
-  if (statusEl) statusEl.textContent = !installed
-    ? "未检测到目标软件" : (running ? "⚠ 目标正在运行，建议先完全退出再导入" : "已就绪，可以导入");
   importBtn.disabled = !installed || !providerModels().length;
 }
 
@@ -263,7 +401,7 @@ async function loadQoder2List() {
     row.innerHTML = `
       <div class="grow">
         <div class="q-name">${esc(p.defaultModel || "?")}</div>
-        <div class="q-url">${esc(p.baseUrl || "-")} · ${esc(p.protocol || "openai")} · ${esc(p.type || "")}</div>
+        <div class="q-url mono">${esc(p.baseUrl || "-")} · ${esc(p.protocol || "openai")} · ${esc(p.type || "")}</div>
         <div class="q-url">模型：${esc(ms)}</div>
       </div>
       <button class="btn danger tiny">删除</button>`;
@@ -353,7 +491,7 @@ function renderQodercnList() {
     row.innerHTML = `
       <div class="grow">
         <div class="q-name">${esc(p.defaultModel || "?")}</div>
-        <div class="q-url">${esc(p.baseUrl || "-")} · ${esc(p.protocol || "openai")} · ${esc(p.type || "")}</div>
+        <div class="q-url mono">${esc(p.baseUrl || "-")} · ${esc(p.protocol || "openai")} · ${esc(p.type || "")}</div>
         <div class="q-url">模型：${esc(ms)}</div>
       </div>
       <button class="btn danger tiny">删除</button>`;
@@ -403,9 +541,9 @@ function renderZcodeList() {
     row.innerHTML = `
       <div class="grow">
         <div class="q-name">${esc(p.name || p.id)}
-          ${p.enabled ? '<span class="badge">使用中</span>' : ""}
+          ${p.enabled ? '<span class="badge badge-ok">使用中</span>' : ""}
           ${p.managed ? '<span class="badge gray">由本工具导入</span>' : ""}</div>
-        <div class="q-url">${esc(p.baseUrl || "-")} · ${esc(p.kind || "")}${p.hasKey ? "" : " · 未保存 Key"}</div>
+        <div class="q-url mono">${esc(p.baseUrl || "-")} · ${esc(p.kind || "")}${p.hasKey ? "" : " · 未保存 Key"}</div>
         <div class="q-url">模型：${esc(ms)}</div>
       </div>
       <button class="btn tiny ${p.enabled ? "ghost" : "primary"}" data-act="enable">${p.enabled ? "停用" : "启用"}</button>
@@ -442,7 +580,7 @@ async function zcodeImport() {
 function renderTrae() {
   const t = (state.targets || {}).trae || {};
   $("#t-status").textContent = !t.installed
-    ? "未检测到 TRAE Work CN（TRAE SOLO CN）" : (t.running ? "TRAE 正在运行" : "已安装，可以辅助导入");
+    ? "TRAE：未检测到" : (t.running ? "TRAE：正在运行" : "TRAE：已安装，可以辅助导入");
   providerSel = $("#t-provider");
   fillProviderSelect($("#t-provider"));
   $("#t-prepare").disabled = !t.installed;
@@ -472,8 +610,8 @@ async function loadTraeModels() {
     row.innerHTML = `
       <div class="grow">
         <div class="q-name">${esc(m.name)}
-          ${m.status ? '<span class="badge">已启用</span>' : '<span class="badge gray">已停用</span>'}</div>
-        <div class="q-url">${esc(m.baseUrl || "-")}${m.vision ? " · 视觉" : ""}</div>
+          ${m.status ? '<span class="badge badge-ok">已启用</span>' : '<span class="badge gray">已停用</span>'}</div>
+        <div class="q-url mono">${esc(m.baseUrl || "-")}${m.vision ? " · 视觉" : ""}</div>
       </div>
       <button class="btn tiny ghost" data-act="tg">${m.status ? "停用" : "启用"}</button>
       <button class="btn danger tiny" data-act="del">删除</button>`;
@@ -492,7 +630,7 @@ async function loadTraeModels() {
   }
 }
 
-/* ---------------- Codex 侧边栏 ---------------- */
+/* ---------------- Codex 页（只读展示 + 切换） ---------------- */
 function render() {
   renderSidebar();
   renderDetail();
@@ -500,15 +638,16 @@ function render() {
 
 function renderSidebar() {
   const box = $("#provider-list");
+  if (!box) return;
   box.innerHTML = "";
   for (const p of state.providers) {
     const card = document.createElement("div");
     card.className = "p-card" + (p.id === selected ? " selected" : "");
     const isActive = p.id === state.active;
     card.innerHTML = `
-      <div class="p-name"><span>${esc(p.name)}</span>${isActive ? '<span class="badge">使用中</span>' : ""}</div>
-      <div class="p-url">${p.id === "original" ? "ChatGPT 官方账号，原始配置" : esc(p.base_url)}</div>`;
-    card.onclick = () => { selected = p.id; render(); };
+      <div class="p-name"><span>${esc(p.name)}</span>${isActive ? '<span class="badge badge-ok">使用中</span>' : ""}</div>
+      <div class="p-url mono">${p.id === "original" ? "ChatGPT 官方账号，原始配置" : esc(p.base_url)}</div>`;
+    card.onclick = () => { selected = p.id; renderSidebar(); renderDetail(); };
     box.appendChild(card);
   }
   $("#status-line").innerHTML =
@@ -522,51 +661,42 @@ function activeName() {
   return p.name;
 }
 
-/* ---------------- 详情区 ---------------- */
+/* ---------------- 详情区（只读，编辑入口在目标管理） ---------------- */
 function renderDetail() {
   const d = $("#detail");
   const p = state.providers.find((x) => x.id === selected);
   if (!p) { d.innerHTML = ""; return; }
   const isActive = p.id === state.active;
+  const rows = [];
+  const fr = (k, v, wide) => rows.push(
+    `<div class="f-row${wide ? " wide" : ""}"><span class="k">${k}</span><span class="v${/^(https?|~|\/|C:)/.test(String(v)) ? " mono" : ""}">${v}</span></div>`);
 
   if (p.id === "original") {
-    d.innerHTML = `
-      <div class="d-card">
-        <div class="d-head"><h2>${esc(p.name)}</h2>${isActive ? '<span class="badge">使用中</span>' : ""}</div>
-        <div class="d-tag">恢复 Codex 原始配置，通过 ChatGPT 官方账号登录使用。</div>
-        <div class="field"><div class="k">说明</div><div class="v">将 ${esc(state.config_file)} 还原为备份的原始内容（保留插件、MCP 等设置）。</div></div>
-        <div class="field"><div class="k">API Key</div><div class="v">不需要（使用官方登录凭据）</div></div>
-        <div class="d-actions">
-          <button class="btn big ${isActive ? "active" : "primary"}" id="btn-switch" ${isActive ? "disabled" : ""}>
-            ${isActive ? "✓ 当前正在使用" : "启用此配置"}</button>
-        </div>
-      </div>`;
+    fr("说明", `将 ${esc(state.config_file || "~/.codex/config.toml")} 还原为备份的原始内容（保留插件、MCP 等设置）`, true);
+    fr("API Key", "不需要（使用官方登录凭据）");
   } else {
-    d.innerHTML = `
-      <div class="d-card">
-        <div class="d-head"><h2>${esc(p.name)}</h2>${isActive ? '<span class="badge">使用中</span>' : ""}</div>
-        <div class="d-tag">自定义 API 供应商 · 所有目标页签共用</div>
-        <div class="field"><div class="k">Base URL</div><div class="v">${esc(p.base_url)}</div></div>
-        <div class="field"><div class="k">API 格式</div><div class="v">${p.wire_api === "chat" ? "Chat Completions (/v1/chat/completions)" : "Responses（原生 /responses）"}</div></div>
-        <div class="field"><div class="k">鉴权方式</div><div class="v">${p.auth_mode === "authjson" ? "auth.json（CC Switch 同款）" : "环境变量"}</div></div>
-        <div class="field"><div class="k">API Key</div><div class="v">${esc(maskKey(p.api_key))}</div></div>
-        ${p.env_key && p.auth_mode !== "authjson" ? `<div class="field"><div class="k">环境变量</div><div class="v">${esc(p.env_key)}</div></div>` : ""}
-        <div class="field"><div class="k">默认模型</div><div class="v">${esc(p.model || "-")}${!p.model && (p.models || []).length ? "（取映射第一行）" : ""}</div></div>
-        <div class="field"><div class="k">推理力度</div><div class="v">${esc(p.reasoning_effort || "跟随模型目录默认")}</div></div>
-        <div class="field"><div class="k">Review 模型</div><div class="v">${esc(p.review_model || "-")}</div></div>
-        <div class="field"><div class="k">模型列表</div><div class="v">${(p.models || []).map(esc).join("、") || "-"}</div></div>
-        <div class="field"><div class="k">上下文 / 输出</div><div class="v">${p.context_window} / ${p.max_output_tokens} tokens</div></div>
-        <div class="d-actions">
-          <button class="btn big ${isActive ? "active" : "primary"}" id="btn-switch" ${isActive ? "disabled" : ""}>
-            ${isActive ? "✓ 当前正在使用" : "启用此配置"}</button>
-          <button class="btn ghost big" id="btn-edit">编辑</button>
-          <button class="btn danger big" id="btn-del">删除</button>
-        </div>
-      </div>`;
+    fr("Base URL", esc(p.base_url));
+    fr("API 格式", p.wire_api === "chat" ? "Chat Completions (/v1/chat/completions)" : "Responses（原生 /responses）");
+    fr("鉴权方式", p.auth_mode === "authjson" ? "auth.json（CC Switch 同款）" : "环境变量");
+    fr("API Key", esc(maskKey(p.api_key)));
+    if (p.env_key && p.auth_mode !== "authjson") fr("环境变量", esc(p.env_key));
+    fr("默认模型", `${esc(p.model || "-")}${!p.model && (p.models || []).length ? "（取映射第一行）" : ""}`);
+    fr("推理力度", esc(p.reasoning_effort || "跟随模型目录默认"));
+    fr("上下文 / 输出", `${p.context_window} / ${p.max_output_tokens} tokens`);
+    fr("Review 模型", esc(p.review_model || "-"));
+    fr("模型列表", (p.models || []).map((m) => `<span class="chip mono" style="margin:0 4px 4px 0">${esc(m)}</span>`).join("") || "-", true);
   }
+  d.innerHTML = `
+    <div class="d-head"><h2>${esc(p.name)}</h2>${isActive ? '<span class="badge badge-ok">使用中</span>' : ""}
+      <span class="badge gray" style="margin-left:auto">只读 · 在目标管理编辑</span></div>
+    <div class="d-tag">${p.id === "original" ? "恢复 Codex 原始配置，通过 ChatGPT 官方账号登录使用。" : "自定义 API 供应商 · 所有目标页签共用"}</div>
+    <div class="fields">${rows.join("")}</div>
+    <div class="d-actions">
+      <button class="btn big ${isActive ? "active" : "primary"}" id="btn-switch" ${isActive ? "disabled" : ""}
+        style="width:auto;padding:11px 26px">
+        ${isActive ? "✓ 当前正在使用" : "启用此配置"}</button>
+    </div>`;
   $("#btn-switch") && ($("#btn-switch").onclick = doSwitch);
-  $("#btn-edit") && ($("#btn-edit").onclick = () => openModal(p));
-  $("#btn-del") && ($("#btn-del").onclick = () => doDelete(p));
 }
 
 function maskKey(k) { return k && k.length > 12 ? k.slice(0, 8) + "••••••••" + k.slice(-4) : (k || "-"); }
@@ -591,7 +721,7 @@ async function doDelete(p) {
   else toast(r.error || "删除失败", true);
 }
 
-/* ---------------- 弹窗 ---------------- */
+/* ---------------- 弹窗（添加/编辑供应商，入口在目标管理） ---------------- */
 function openModal(p) {
   editingId = p ? p.id : null;
   $("#modal-title").textContent = p ? "编辑供应商" : "添加供应商";
@@ -608,6 +738,7 @@ function openModal(p) {
   $("#f-max").value = p ? p.max_output_tokens : 32768;
   limitAuto = true;
   $("#f-limits-hint").textContent = "";
+  $("#f-limits-hint").style.cssText = "";
   draftModels = (p && p.models || []).map((m) => ({ id: m, on: true }));
   $("#f-model-input").value = "";
   renderModelChips();
@@ -693,7 +824,7 @@ async function saveProvider() {
     selected = r.id;
     await refresh(true);
     if (editingId) toast("已保存");
-    else toast("供应商已保存 —— 切到上方 Qoder / ZCode / TRAE Work CN 等页签即可一键导入（详见「目标管理」）");
+    else toast("供应商已保存到供应商库 —— Codex / Qoder / ZCode / TRAE 等页已自动识别");
   } else toast(r.error || "保存失败", true);
 }
 
@@ -751,9 +882,9 @@ function addManualModel() {
 async function restartCodex() {
   if (state.codex_running && !(await confirmDlg("Codex 正在运行，确认关闭并重启吗？"))) return;
   const btn = $("#btn-restart");
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
   const r = await api("/api/restart-codex", {});
-  btn.disabled = false;
+  if (btn) btn.disabled = false;
   if (r.ok) toast("Codex 正在启动…");
   else toast(r.error || "重启失败", true);
   setTimeout(refresh, 4000);
@@ -784,6 +915,8 @@ function confirmDlg(msg) {
 
 /* ---------------- init ---------------- */
 $("#btn-add").onclick = () => openModal(null);
+$("#btn-add-lib").onclick = () => openModal(null);
+$("#btn-goto-providers").onclick = () => switchTab("targets");
 $("#modal-close").onclick = closeModal;
 $("#btn-cancel").onclick = closeModal;
 $("#modal-mask").onclick = (e) => { if (e.target.id === "modal-mask") closeModal(); };
@@ -801,7 +934,11 @@ $("#f-authmode").addEventListener("change", syncAuthMode);
 $("#f-model").addEventListener("change", () => { limitAuto = true; detectLimits($("#f-model").value); });
 ["f-ctx", "f-max"].forEach((id) => $("#" + id).addEventListener("input", () => {
   limitAuto = false;
-  $("#f-limits-hint").textContent = "已手动修改，切换模型可重新自动识别";
+  const h = $("#f-limits-hint");
+  h.textContent = "已手动修改，切换模型可重新自动识别";
+  h.style.borderColor = "var(--line)";
+  h.style.background = "var(--field)";
+  h.style.color = "var(--muted)";
 }));
 $("#q2-provider").addEventListener("change", renderQoder2);
 $("#q2-import").onclick = qoder2Import;
@@ -839,7 +976,101 @@ $("#net-save").onclick = async () => {
   if (r.ok) { toast("网络设置已保存"); closeNet(); await refresh(true); }
   else toast(r.error || "保存失败", true);
 };
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeModal(); closeNet(); } });
+
+/* ---------------- 极光 3D 氛围层（零依赖 Canvas 伪 3D：粒子场 + 线框多面体 + 鼠标视差） ---------------- */
+(function aurora3D() {
+  const cv = document.getElementById('bg3d');
+  if (!cv || !cv.getContext) return;
+  if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const ctx = cv.getContext('2d');
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 1.5);
+    W = innerWidth; H = innerHeight;
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  addEventListener('resize', resize); resize();
+
+  const F = 14;                        // 相机焦距（透视强度与原型 three.js 场景一致）
+  let mx = 0, my = 0;                  // 鼠标视差 [-.5,.5]
+  addEventListener('mousemove', (e) => { mx = e.clientX / W - .5; my = e.clientY / H - .5; });
+
+  /* 粒子场：球壳分布，渲染为小方块（同原型 Points 形态） */
+  const pts = [];
+  for (let i = 0; i < 220; i++) {
+    const r = 6 + Math.random() * 11, th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+    pts.push([r * Math.sin(ph) * Math.cos(th), r * Math.sin(ph) * Math.sin(th) * .6, r * Math.cos(ph) * .5]);
+  }
+  /* 线框几何：二十面体（大，右下）+ 八面体（小，左上） */
+  function icosahedron(R) {
+    const t = (1 + Math.sqrt(5)) / 2, v = [];
+    for (const a of [-1, 1]) for (const b of [-1, 1]) v.push([0, a, b * t], [a, b * t, 0], [a * t, 0, b]);
+    const n = Math.hypot(0, 1, t);
+    const verts = v.map((p) => p.map((c) => c / n * R));
+    let min = 1e9;
+    for (let i = 0; i < verts.length; i++) for (let j = i + 1; j < verts.length; j++)
+      min = Math.min(min, Math.hypot(verts[i][0] - verts[j][0], verts[i][1] - verts[j][1], verts[i][2] - verts[j][2]));
+    const e = [];
+    for (let i = 0; i < verts.length; i++) for (let j = i + 1; j < verts.length; j++)
+      if (Math.hypot(verts[i][0] - verts[j][0], verts[i][1] - verts[j][1], verts[i][2] - verts[j][2]) < min * 1.05) e.push([i, j]);
+    return { verts, e };
+  }
+  function octahedron(R) {
+    const verts = [[R, 0, 0], [-R, 0, 0], [0, R, 0], [0, -R, 0], [0, 0, R], [0, 0, -R]];
+    const e = [];
+    for (let i = 0; i < 6; i++) for (let j = i + 1; j < 6; j++)
+      if (!(i % 2 === 0 && j === i + 1)) e.push([i, j]);   // 跳过对径点对
+    return { verts, e };
+  }
+  const ico = icosahedron(3.4), oct = octahedron(1.7);
+
+  function rot(p, ax, ay) {            // 先绕 Y 再绕 X
+    let [x, y, z] = p;
+    let c = Math.cos(ay), s = Math.sin(ay);
+    [x, z] = [x * c + z * s, -x * s + z * c];
+    c = Math.cos(ax); s = Math.sin(ax);
+    [y, z] = [y * c - z * s, y * s + z * c];
+    return [x, y, z];
+  }
+  function project(p, off) {
+    const d = F + p[2] + off[2];
+    if (d < 1.2) return null;
+    const k = F / d * Math.min(W, H) / 16;
+    return [W / 2 + (p[0] + off[0] + mx * 2.4) * k, H / 2 - (p[1] + off[1] - my * 1.6) * k, d, k];
+  }
+
+  let hidden = false;
+  document.addEventListener('visibilitychange', () => { hidden = document.hidden; });
+  function wire(shape, off, ax, ay, color) {
+    const vs = shape.verts.map((v) => project(rot(v, ax, ay), off));
+    ctx.strokeStyle = color; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const [i, j] of shape.e) {
+      const a = vs[i], b = vs[j];
+      if (!a || !b) continue;
+      ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
+    }
+    ctx.stroke();
+  }
+  function frame(t) {
+    requestAnimationFrame(frame);
+    if (hidden || !W) return;
+    ctx.clearRect(0, 0, W, H);
+    const ry = t * .00006 + mx * .25, rx = my * .12;
+    for (const p of pts) {
+      const pr = project(rot(p, rx, ry), [0, 0, 0]);
+      if (!pr) continue;
+      ctx.fillStyle = `rgba(99,102,241,${Math.min(.5, Math.max(.07, 4.9 / pr[2])).toFixed(3)})`;
+      const size = Math.max(1, .08 * pr[3]);
+      ctx.fillRect(pr[0], pr[1], size, size);
+    }
+    wire(ico, [8, -3.5, -5], t * .00005, t * .00008, 'rgba(79,70,229,.14)');
+    wire(oct, [-8.5, 3.5, -4], t * .00006, -t * .0001, 'rgba(8,145,178,.2)');
+  }
+  requestAnimationFrame(frame);
+})();
 
 refresh();
 loadModelLimitsOnline();

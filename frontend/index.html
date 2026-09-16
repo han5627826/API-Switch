@@ -7,12 +7,20 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
+<!-- 氛围层：极光渐变光斑 + 漂浮光珠（纯 CSS，离线可用） -->
+<div class="mesh" aria-hidden="true"><i class="m1"></i><i class="m2"></i><i class="m3"></i></div>
+<div class="orb o1" aria-hidden="true"></div>
+<div class="orb o2" aria-hidden="true"></div>
+<div class="orb o3" aria-hidden="true"></div>
+<canvas id="bg3d" aria-hidden="true"></canvas>
+
 <header>
   <div class="brand">
-    <div class="logo">⇄</div>
+    <div class="logo"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3L4 7l4 4"/><path d="M4 7h16"/><path d="M16 21l4-4-4-4"/><path d="M20 17H4"/></svg></div>
     <div>
       <h1>API 修改器</h1>
-      <p class="sub">AI 工具自定义模型 · 一键配置与切换</p>
+      <p class="sub">AI 工具自定义模型 · 统一供应商管理</p>
     </div>
   </div>
   <div class="header-actions">
@@ -22,56 +30,106 @@
 </header>
 
 <nav id="tabs">
-  <button class="tab active" data-view="codex">Codex</button>
+  <button class="tab active" data-view="targets">目标管理<span class="home">首页</span></button>
+  <span class="tab-sep"></span>
+  <button class="tab" data-view="codex">Codex</button>
   <button class="tab" data-view="qoder2">Qoder</button>
   <button class="tab" data-view="qodercn">Qoder CN</button>
   <button class="tab" data-view="zcode">ZCode</button>
   <button class="tab" data-view="trae">TRAE Work CN</button>
-  <button class="tab" data-view="targets">目标管理</button>
 </nav>
 
-<main>
+<main id="scroller">
+<div class="page">
+
+  <!-- ============ 目标管理（首页） ============ -->
+  <section id="view-targets" class="view">
+    <div class="glass card console">
+      <div class="console-left">
+        <h2>总控台</h2>
+        <p class="console-desc">在这里统一维护<b>供应商库</b>。添加一次，Codex、Qoder、ZCode、TRAE 各页<b>自动识别</b>并可一键导入。</p>
+      </div>
+      <div class="console-right">
+        <div class="stat"><div class="stat-num" id="stat-providers">0</div><div class="stat-label">供应商</div></div>
+        <div class="stat-div"></div>
+        <div class="stat"><div class="stat-num" id="stat-models">0</div><div class="stat-label">模型总数</div></div>
+        <div class="stat-div"></div>
+        <div class="stat"><div class="stat-num" id="stat-targets">0/5</div><div class="stat-label">已检测软件</div></div>
+        <button id="btn-add" class="btn primary">＋ 添加供应商</button>
+      </div>
+    </div>
+
+    <div class="targets-cols">
+      <div class="col-main">
+        <div class="glass card">
+          <div class="hdr">
+            <span class="t">供应商库</span>
+            <span class="badge">所有软件共用 · 在此统一添加</span>
+            <button id="btn-add-lib" class="btn ghost tiny">＋ 新增</button>
+          </div>
+          <div id="provider-grid" class="provider-grid"></div>
+        </div>
+        <div class="glass card">
+          <div class="hdr">
+            <span class="t">导入目标</span>
+            <span class="sub">自动扫描本机配置目录</span>
+          </div>
+          <div id="targets-list" class="targets-list"></div>
+        </div>
+      </div>
+      <div class="col-side">
+        <div class="glass card">
+          <div class="hdr"><span class="t">Codex 当前配置</span></div>
+          <div id="codex-config" class="codex-config"></div>
+        </div>
+        <div class="card note">
+          <b>工作流：</b>在上方「供应商库」添加或编辑供应商，各软件页签会自动读取供应商列表；进入对应页签勾选模型后一键导入即可。
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ============ Codex 模块 ============ -->
-  <section id="view-codex" class="view">
-    <div class="view-toolbar">
-      <span class="view-title">Codex 供应商配置（ChatGPT 桌面版 / CLI 共用）</span>
-      <span class="spacer"></span>
-      <button id="btn-restart" class="btn ghost" title="结束 Codex 进程并以当前配置重启">重启 Codex</button>
-      <button id="btn-add" class="btn primary">＋ 添加供应商</button>
+  <section id="view-codex" class="view hidden">
+    <div class="glass card banner">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5" opacity=".55"/></svg>
+      <span class="banner-text" id="codex-banner-text"></span>
+      <button id="btn-goto-providers" class="btn primary tiny">前往供应商库</button>
+      <button id="btn-restart" class="btn primary tiny" title="结束 Codex 进程并以当前配置重启">重启 Codex</button>
     </div>
     <div class="split">
-      <aside id="sidebar">
-        <div class="side-title">供应商（所有目标页共用此库）</div>
+      <aside class="glass card side-card">
+        <div class="hdr"><span class="t">配置列表</span></div>
         <div id="provider-list"></div>
         <div class="side-footer"><div id="status-line">…</div></div>
       </aside>
-      <section id="detail"></section>
+      <section id="detail" class="glass card detail-card"></section>
     </div>
   </section>
 
   <!-- ============ Qoder（桌面版·新版）模块 ============ -->
   <section id="view-qoder2" class="view hidden">
-    <div class="view-toolbar">
-      <span class="view-title">Qoder 自定义模型导入（写入 ~/.qoder/settings.json，与 Qoder 新版「自定义模型」格式一致）</span>
-      <span class="spacer"></span>
-      <span id="q2-status" class="muted">…</span>
+    <div class="glass card banner">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5" opacity=".55"/></svg>
+      <span class="banner-text" id="q2-banner"></span>
+      <span class="banner-status muted" id="q2-status">…</span>
     </div>
     <div class="split">
-      <aside class="side">
-        <div class="side-title">① 从供应商导入</div>
-        <div class="pane-pad">
-          <label class="muted">选择供应商
+      <aside class="glass card side-card">
+        <div class="hdr"><span class="t">① 选择供应商 → ② 勾选模型</span></div>
+        <div class="pane-pad field">
+          <label>供应商（自动识别）
             <select id="q2-provider"></select>
           </label>
-          <div class="side-title" style="margin-top:10px">② 选择模型（含自动识别的上下文 / 输出）</div>
+          <div class="group-label">模型 · 自动识别上下文 / 输出</div>
           <div id="q2-models" class="model-list vertical"></div>
-          <button id="q2-import" class="btn primary big" style="width:100%;margin-top:12px">一键导入到 Qoder</button>
-          <p class="hint">导入前请完全退出 Qoder。新配置在 Qoder 下次启动时生效。此方式为 Qoder 新版自定义模型（BYOK）格式；旧「云端白名单」限制仅影响旧版模型列表。</p>
+          <button id="q2-import" class="btn primary big">一键导入到 Qoder</button>
+          <p class="hint">导入 = 写入 <span class="mono">~/.qoder/settings.json</span>（新版自定义模型 BYOK 格式）。导入前请完全退出 Qoder，新配置在下次启动时生效。</p>
         </div>
       </aside>
-      <section class="detail-pane">
+      <section class="glass card detail-card">
+        <div class="hdr"><span class="t">已导入 · settings.json</span></div>
         <div class="pane-pad">
-          <div class="side-title">已导入 / settings.json 中现有的自定义供应商</div>
           <div id="q2-list"><span class="muted">…</span></div>
         </div>
       </section>
@@ -80,27 +138,27 @@
 
   <!-- ============ Qoder CN（CLI）模块 ============ -->
   <section id="view-qodercn" class="view hidden">
-    <div class="view-toolbar">
-      <span class="view-title">Qoder CN 自定义模型导入（写入 ~/.qoder-cn/settings.json，CLI 与原生格式一致）</span>
-      <span class="spacer"></span>
-      <span id="qn-status" class="muted">…</span>
+    <div class="glass card banner">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5" opacity=".55"/></svg>
+      <span class="banner-text" id="qn-banner"></span>
+      <span class="banner-status muted" id="qn-status">…</span>
     </div>
     <div class="split">
-      <aside class="side">
-        <div class="side-title">① 从供应商导入</div>
-        <div class="pane-pad">
-          <label class="muted">选择供应商
+      <aside class="glass card side-card">
+        <div class="hdr"><span class="t">① 选择供应商 → ② 勾选模型</span></div>
+        <div class="pane-pad field">
+          <label>供应商（自动识别）
             <select id="qn-provider"></select>
           </label>
-          <div class="side-title" style="margin-top:10px">② 选择模型（含自动识别的上下文 / 输出）</div>
+          <div class="group-label">模型 · 自动识别上下文 / 输出</div>
           <div id="qn-models" class="model-list vertical"></div>
-          <button id="qn-import" class="btn primary big" style="width:100%;margin-top:12px">一键导入到 Qoder CN</button>
-          <p class="hint">导入 = 在 settings.json 的 providers 中写入自定义供应商（含 contextWindow / maxOutputTokens / 能力）。与 Qoder CN 原生 BYOK 格式一致；新配置在下次对话时生效。</p>
+          <button id="qn-import" class="btn primary big">一键导入到 Qoder CN</button>
+          <p class="hint">导入 = 在 <span class="mono">~/.qoder-cn/settings.json</span> 的 providers 中写入自定义供应商（含 contextWindow / maxOutputTokens / 能力）。与 Qoder CN 原生 BYOK 格式一致；新配置在下次对话时生效。</p>
         </div>
       </aside>
-      <section class="detail-pane">
+      <section class="glass card detail-card">
+        <div class="hdr"><span class="t">已导入 · settings.json</span></div>
         <div class="pane-pad">
-          <div class="side-title">已导入 / settings.json 中现有的自定义供应商</div>
           <div id="qn-list"><span class="muted">…</span></div>
         </div>
       </section>
@@ -109,27 +167,27 @@
 
   <!-- ============ ZCode 模块 ============ -->
   <section id="view-zcode" class="view hidden">
-    <div class="view-toolbar">
-      <span class="view-title">ZCode 自定义模型导入与切换（写入 ~/.zcode/v2/config.json，重启 ZCode 生效）</span>
-      <span class="spacer"></span>
-      <span id="zc-status" class="muted">…</span>
+    <div class="glass card banner">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5" opacity=".55"/></svg>
+      <span class="banner-text" id="zc-banner"></span>
+      <span class="banner-status muted" id="zc-status">…</span>
     </div>
     <div class="split">
-      <aside class="side">
-        <div class="side-title">① 从供应商导入</div>
-        <div class="pane-pad">
-          <label class="muted">选择供应商
+      <aside class="glass card side-card">
+        <div class="hdr"><span class="t">① 选择供应商 → ② 勾选模型</span></div>
+        <div class="pane-pad field">
+          <label>供应商（自动识别）
             <select id="zc-provider"></select>
           </label>
-          <div class="side-title" style="margin-top:10px">② 选择模型</div>
+          <div class="group-label">模型列表</div>
           <div id="zc-models" class="model-list vertical"></div>
-          <button id="zc-import" class="btn primary big" style="width:100%;margin-top:12px">一键导入到 ZCode</button>
+          <button id="zc-import" class="btn primary big">一键导入到 ZCode</button>
           <p class="hint">导入 = 在 ZCode 的模型供应商中新增自定义供应商并启用（同名会合并模型）。ZCode 的 API Key 为明文保存；导入前可先退出 ZCode，导入后重启 ZCode 生效。</p>
         </div>
       </aside>
-      <section class="detail-pane">
+      <section class="glass card detail-card">
+        <div class="hdr"><span class="t">ZCode 中现有的自定义供应商（「启用」即切换）</span></div>
         <div class="pane-pad">
-          <div class="side-title">ZCode 中现有的自定义供应商（「启用」即切换）</div>
           <div id="zc-list"><span class="muted">…</span></div>
         </div>
       </section>
@@ -138,58 +196,47 @@
 
   <!-- ============ TRAE Work CN 模块 ============ -->
   <section id="view-trae" class="view hidden">
-    <div class="view-toolbar">
-      <span class="view-title">TRAE Work CN · 辅助导入与模型管理</span>
-      <span class="spacer"></span>
-      <span id="t-status" class="muted">…</span>
+    <div class="glass card banner">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5" opacity=".55"/></svg>
+      <span class="banner-text" id="t-banner"></span>
+      <span class="banner-status muted" id="t-status">…</span>
     </div>
     <div class="split">
-      <aside class="side">
-        <div class="side-title">辅助导入</div>
-        <div class="pane-pad">
-          <label class="muted">供应商
+      <aside class="glass card side-card">
+        <div class="hdr"><span class="t">辅助导入</span></div>
+        <div class="pane-pad field">
+          <label>供应商（自动识别）
             <select id="t-provider"></select>
           </label>
-          <button id="t-prepare" class="btn primary big" style="width:100%;margin-top:12px">
-            复制模型信息并启动 TRAE</button>
+          <button id="t-prepare" class="btn primary big">复制模型信息并启动 TRAE</button>
           <p class="hint" id="t-copied"></p>
-          <div class="diag warn" style="margin-top:10px">TRAE 对 API Key 使用<b>私有加密</b>存储，外部工具无法代写密文，
+          <div class="diag warn">TRAE 对 API Key 使用<b>私有加密</b>存储，外部工具无法代写密文，
             因此采用「信息预填 + 手动粘贴」导入。下方列表支持查看 / 停用 / 删除已有的自定义模型。</div>
         </div>
       </aside>
-      <section class="detail-pane">
+      <section class="glass card detail-card">
+        <div class="hdr"><span class="t">TRAE 中现有的自定义模型</span></div>
         <div class="pane-pad">
-          <div class="side-title">TRAE 中现有的自定义模型</div>
           <div id="t-list"><span class="muted">…</span></div>
         </div>
       </section>
     </div>
   </section>
 
-  <!-- ============ 目标管理 ============ -->
-  <section id="view-targets" class="view hidden">
-    <div class="view-toolbar">
-      <span class="view-title">导入目标管理 —— 本工具支持的软件与当前检测状态</span>
-      <span class="spacer"></span>
-    </div>
-    <div class="pane-pad">
-      <p class="hint" style="margin-bottom:12px">
-        先在 <b>Codex 页</b>「＋ 添加供应商」录入 API 地址与 Key（供应商库所有页共用），再到对应页签一键导入。
-        下方未检测到的软件，其页签会置灰提示；安装并启动过一次后即可识别。</p>
-      <div id="targets-grid" class="targets-grid"></div>
-    </div>
-  </section>
-
+</div>
 </main>
 
-<!-- 添加/编辑弹窗（Codex） -->
+<!-- 添加/编辑弹窗（入口在「目标管理 · 供应商库」） -->
 <div id="modal-mask" class="hidden">
   <div id="modal">
     <div class="modal-head">
-      <h2 id="modal-title">添加供应商</h2>
+      <div>
+        <h2 id="modal-title">添加供应商</h2>
+        <div class="modal-sub">保存后，Codex / Qoder / ZCode / TRAE 各页将自动识别</div>
+      </div>
       <button class="icon-btn" id="modal-close">✕</button>
     </div>
-    <div class="modal-body">
+    <div class="modal-body field">
       <div class="grid2">
         <label>名称 *
           <input id="f-name" placeholder="例如：AIHub">
@@ -266,7 +313,7 @@
           <input id="f-max" type="number" value="32768">
         </label>
       </div>
-      <div id="f-limits-hint" class="hint" style="margin:2px 0 6px"></div>
+      <div id="f-limits-hint" class="limits-hint"></div>
 
       <div id="test-result" class="hidden"></div>
     </div>
@@ -283,13 +330,15 @@
 <div id="net-mask" class="hidden">
   <div id="net-box">
     <div class="modal-head">
-      <h2>网络设置</h2>
+      <div><h2>网络设置</h2></div>
       <button class="icon-btn" id="net-close">✕</button>
     </div>
-    <label>代理地址（用于「测试连接」和「获取模型列表」）
-      <input id="f-proxy" placeholder="留空=直连；例如 http://127.0.0.1:7897">
-      <span class="hint">部分中转站（如 aihub.top）直连不可达，需填本地代理。切换配置和 Codex 本身的联网不受此影响。</span>
-    </label>
+    <div class="field">
+      <label>代理地址（用于「测试连接」和「获取模型列表」）
+        <input id="f-proxy" placeholder="留空=直连；例如 http://127.0.0.1:7897">
+        <span class="hint">部分中转站（如 aihub.top）直连不可达，需填本地代理。切换配置和 Codex 本身的联网不受此影响。</span>
+      </label>
+    </div>
     <div class="modal-foot">
       <span class="spacer"></span>
       <button class="btn ghost" id="net-cancel">取消</button>
