@@ -976,6 +976,24 @@ $("#net-save").onclick = async () => {
   if (r.ok) { toast("网络设置已保存"); closeNet(); await refresh(true); }
   else toast(r.error || "保存失败", true);
 };
+$("#btn-uninstall").onclick = async () => {
+  closeNet();
+  const msg = "将执行以下操作，且不可恢复：\n\n" +
+    "1. 还原 Codex 原始配置（用首次修改前的备份覆盖回 config.toml / auth.json）\n" +
+    "2. 删除本工具全部数据：供应商库与其中保存的 API Key\n\n" +
+    "已导入到 Qoder / ZCode / TRAE 的模型不受影响，需在各软件内自行删除。\n" +
+    "确认清除后，请手动删除本程序的 exe 文件完成卸载。是否继续？";
+  if (!(await confirmDlg(msg))) return;
+  const r = await api("/api/uninstall", { restoreOriginal: true });
+  if (!r.ok) { toast("清除失败：" + (r.errors || []).join("；"), true); return; }
+  toast(r.restored ? "已还原 Codex 原始配置并清除工具数据" : "已清除工具数据", false);
+  document.body.innerHTML = '<div style="font:14px/1.9 sans-serif;padding:56px;color:#334;max-width:560px;margin:80px auto">' +
+    '<h2 style="margin:0 0 12px">数据已清除</h2>' +
+    '<p>' + (r.restored ? "Codex 原始配置已还原。<br>" : "") +
+    '本工具的全部数据（供应商库与 Key）已删除。<br><br>' +
+    '最后一步：<b>关闭本窗口，然后删除本程序的 exe 文件</b>，即完成卸载。</p></div>';
+  setTimeout(() => { try { window.close(); } catch (e) {} setTimeout(() => location.reload, 1500); }, 4000);
+};
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeModal(); closeNet(); } });
 
 /* ---------------- 极光 3D 氛围层（零依赖 Canvas 伪 3D：粒子场 + 线框多面体 + 鼠标视差） ---------------- */

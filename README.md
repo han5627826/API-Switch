@@ -1,7 +1,20 @@
 # API Switch
 
 一个**纯本地、绿色免安装**的 Windows 桌面小工具：为 AI 编程工具（Codex / Qoder / Qoder CN / ZCode / TRAE Work CN）**一键配置与切换自定义模型供应商**（中转站 / 自建 API），省去手动改配置文件的麻烦。
-<img width="1384" height="991" alt="image" src="https://github.com/user-attachments/assets/4b7a7218-93ac-478e-bf80-197549af0347" />
+
+## 界面预览
+
+**目标管理（首页）**：供应商库统一管理，自动扫描各软件检测状态
+
+![目标管理首页](docs/shots/home.png)
+
+**添加供应商**：一次录入，所有页签共用
+
+![添加供应商](docs/shots/add-provider.png)
+
+**Codex 页**：一键切换 / 还原官方登录
+
+![Codex 页](docs/shots/codex.png)
 
 
 ## 功能一览
@@ -31,7 +44,11 @@
 
 ## 更新机制
 
-工具内置一键更新：打开后自动向 GitHub Releases API 查询最新版本号，发现更新时在右上角显示「发现新版本 vX.Y.Z」按钮；点击后自动下载新版本、SHA-256 校验、覆盖安装并重启，供应商配置全部保留。发布者只需打 tag、上传 exe 即可发布新版本，流程见 [tools/README.md](tools/README.md)。
+工具内置一键更新：打开后自动向 GitHub Releases API 查询最新版本号，也可随时点右上角「检查更新」手动检查；发现更新时显示「发现新版本 vX.Y.Z」按钮，点击后自动下载新版本、SHA-256 校验、覆盖安装并重启，供应商配置全部保留。发布者只需打 tag、上传 exe 即可发布新版本，流程见 [tools/README.md](tools/README.md)。
+
+## 卸载
+
+打开「网络设置」→ 左下角「**卸载并清除数据**」：会自动还原 Codex 原始配置（用首次修改前的备份覆盖回），并删除本工具全部数据（供应商库与其中加密保存的 API Key）。最后手动删除 exe 文件即完成卸载。已导入到 Qoder / ZCode / TRAE 的模型属于各软件自己的配置，不会被动到，需在对应软件内删除。
 
 ## 许可
 

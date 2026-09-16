@@ -2,6 +2,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.3] - 2026-09-16
+
+### 新增
+- **「卸载并清除数据」**：网络设置弹窗左下角新增红色入口。一键完成：还原 Codex 原始配置（用首次修改前的备份覆盖回 `config.toml` / `auth.json`）→ 删除工具数据目录（供应商库与其中 DPAPI 加密的 API Key，不可恢复）→ 删除模型规格缓存。已导入到 Qoder / ZCode / TRAE 的模型属于各软件自己的配置，不受影响。
+- README 新增三张原始界面截图（目标管理首页 / 添加供应商 / Codex 页）。
+
 ## [1.2.2] - 2026-09-16
 
 ### 新增

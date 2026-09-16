@@ -837,6 +837,48 @@ def make_server():
         threading.Thread(target=_die, daemon=True).start()
         return {"ok": True}
 
+    def _uninstall_cleanup(restore_original=True):
+        """卸载并清除数据：
+        1) 用首次修改前的备份还原 Codex 原始配置（config.original.toml / auth.original.json）
+        2) 删除本工具数据目录（供应商库，含 DPAPI 加密的 Key）——不可恢复
+        3) 删除工具维护的 Codex 模型规格缓存 codex-models.json
+        各目标软件（Qoder / ZCode / TRAE 等）自己配置文件里已导入的模型不属于本工具，不触碰。
+        执行后前端应提示用户关闭并删除 exe 本体。"""
+        result = {"ok": True, "restored": False, "removed": [], "errors": []}
+
+        def rm(path):
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+                    result["removed"].append(path)
+                elif os.path.isdir(path):
+                    shutil.rmtree(path)
+                    result["removed"].append(path)
+            except Exception as e:
+                result["ok"] = False
+                result["errors"].append(os.path.basename(path) + ": " + str(e)[:100])
+
+        # 1) 还原 Codex 原始配置（备份存在才动；不存在说明从未切换过，无需处理）
+        if restore_original:
+            try:
+                has_backup = os.path.exists(BASE_FILE) or os.path.exists(AUTH_BACKUP_FILE)
+                in_use = os.path.exists(CONFIG_FILE)
+                if has_backup and in_use:
+                    apply_original()
+                    result["restored"] = True
+            except Exception as e:
+                result["ok"] = False
+                result["errors"].append("restore: " + str(e)[:120])
+
+        # 2) 工具数据目录（供应商库，全部加密数据随之销毁）
+        if os.path.isdir(DATA_DIR):
+            rm(DATA_DIR)
+
+        # 3) 模型规格缓存
+        rm(os.path.join(HOME, ".codex", "codex-models.json"))
+
+        return result
+
     # =====================================================================
     # 路由挂载
     # =====================================================================
@@ -938,6 +980,9 @@ def make_server():
         if path == "/api/update/apply":
             self._send(200, _upd_apply())
             return True
+        if path == "/api/uninstall":
+            self._send(200, _uninstall_cleanup(body.get("restoreOriginal", True)))
+            return True
         return False
 
     MY_POST_PATHS = {
@@ -945,7 +990,7 @@ def make_server():
         "/api/qoder2/import", "/api/qoder2/delete",
         "/api/zcode/import", "/api/zcode/enable", "/api/zcode/delete",
         "/api/trae/models/delete", "/api/trae/models/toggle", "/api/trae/prepare2",
-        "/api/update/start", "/api/update/apply",
+        "/api/update/start", "/api/update/apply", "/api/uninstall",
     }
 
     def _wrapped_get(self):
