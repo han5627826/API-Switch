@@ -108,9 +108,33 @@ async function updPoll() {
   if (hdr && !document.querySelector("#btn-update")) {
     const b = document.createElement("button");
     b.id = "btn-update"; b.className = "btn ghost hidden";
-    hdr.insertBefore(b, hdr.firstChild);
+    // 发现新版本按钮插到「检查更新」之后（若手动按钮存在），否则放行首
+    const anchor = document.querySelector("#btn-check-update");
+    if (anchor && anchor.nextSibling) hdr.insertBefore(b, anchor.nextSibling);
+    else hdr.insertBefore(b, hdr.firstChild);
   }
   setTimeout(() => updCheck(true), 1500);
+}
+/* 手动检查更新：点击「检查更新」按钮立即发起检查并给出结果反馈 */
+{
+  const cb = document.querySelector("#btn-check-update");
+  if (cb) cb.onclick = async () => {
+    const old = cb.textContent;
+    cb.disabled = true; cb.textContent = "检查中…";
+    try {
+      const j = await updCheck(false);
+      if (j && j.has_update && cb) {
+        // 有新版本时按钮短暂提示结果，随后恢复（一键更新按钮已单独显示）
+        cb.textContent = "有新版本";
+        setTimeout(() => { cb.textContent = old; cb.disabled = false; }, 2500);
+        return;
+      }
+    } finally {
+      if (!document.querySelector("#btn-update:not(.hidden)")) {
+        cb.textContent = old; cb.disabled = false;
+      }
+    }
+  };
 }
 '''
 
@@ -242,8 +266,12 @@ def main():
                 assert old in html, "HTML anchor missing: %r" % old[:40]
                 html = html.replace(old, new)
             html = html.replace(
-                '  <div class="header-actions">',
-                '  <div class="header-actions">\n    <button id="btn-update" class="btn ghost hidden" title="发现新版本时点击可前往下载">发现新版本</button>')
+                '    <button id="btn-check-update" class="btn ghost" title="手动检查是否为最新版本">检查更新</button>',
+                '    <button id="btn-check-update" class="btn ghost" title="手动检查是否为最新版本">检查更新</button>\n    <button id="btn-update" class="btn ghost hidden" title="发现新版本时点击一键更新">发现新版本</button>')
+            # 手动「检查更新」按钮：置于网络设置右侧（同一行）
+            assert 'id="btn-check-update"' in html, "index.html 缺少 btn-check-update 按钮（检查更新）"
+            assert html.index('id="btn-net"') < html.index('id="btn-check-update"'), \
+                "btn-check-update 必须位于 btn-net（网络设置）之后"
             new_blobs[e["name"]] = html.encode("utf-8")
         elif n == "static/app.js":
             js = open(os.path.join(FRONT_DIR, "app.js"), encoding="utf-8").read()
@@ -291,6 +319,9 @@ def main():
     js = cr.extract("static\\app.js").decode("utf-8")
     assert "/api/zcode/import" in js and APP_VERSION_OK(js, a.version) and not missing, \
         (missing, "version" if not APP_VERSION_OK(js, a.version) else "")
+    html2 = cr.extract("static\\index.html").decode("utf-8")
+    assert 'id="btn-check-update"' in html2 and html2.index('id="btn-net"') < html2.index('id="btn-check-update"') \
+        and html2.index('id="btn-check-update"') < html2.index('id="btn-update"'), "前端按钮布局自检失败"
     print("self-check: PYZ", ok, "modules | backend routes OK | APP_VERSION", a.version)
 
 
