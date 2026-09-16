@@ -2,24 +2,41 @@
 # -*- coding: utf-8 -*-
 """
 repack.py —— 对母版 exe（PyInstaller 打包）做「外科手术式」定制重打包：
-  1. 改写后端字节码（CArchive 内 app 脚本 + PYZ 内 server 模块）中的字符串常量（品牌定制）；
-  2. 改写前端 index.html / app.js 的标题、示例文案；
-  3. 更换本地数据目录名（与母版隔离，首运行为空库）；
-  4. 注入「检查更新」前端模块（拉取 GitHub Releases 最新版本比对，发现更新才提示）；
-  5. 修复原版「全新安装首次运行 load_data 返回结构不完整」的初始化 bug（替换 ensure_builtin 函数）；
-  6. 替换应用图标（若存在 new_icon.ico）。
+  1. 替换后端 server 模块的 make_server：feature_backend 统一模板
+     （恢复母版 Qoder CN 路由 + 新增 Qoder 桌面版 / ZCode / TRAE Work CN + 一键更新后端）；
+  2. 前端整体替换为 ../frontend 三件套（新页签 + 导入栏 + 目标管理），
+     应用 replacements.json 的 HTML 锚点补丁与 JS 补丁（品牌 / 版本号 / LIMITS_RAW 快照）；
+  3. 改写后端字节码其余字符串常量与 app 模块（品牌定制、数据目录改名）；
+  4. 修复原版「全新安装首次运行 load_data 返回结构不完整」的初始化 bug（替换 ensure_builtin）；
+  5. 替换应用图标（若存在 new_icon.ico）。
 
 所有母版中真实存在的名称/URL/端口字符串保存在同目录 replacements.json
 （已被 .gitignore 排除，绝不入库）。脚本仅包含通用机制。
 
 用法：
-  python repack.py --src "C:/path/母版.exe" --out "API Switch.exe" --version 1.0.0
+  python repack.py --src "C:/path/母版.exe" --out "API Switch.exe" --version 1.1.0
 要求：与母版一致的 Python（3.12）运行本脚本（marshal 跨版本不兼容）。
 """
-import argparse, json, marshal, os, struct, sys, types, zlib
+import argparse, json, marshal, os, re, struct, sys, types, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+FRONT_DIR = os.path.join(os.path.dirname(HERE), "frontend")
+sys.path.insert(0, HERE)
+import feature_backend  # noqa: E402
+
 COOKIE_MAGIC = b'MEI\014\013\012\013\016'
+
+# 前端 app.js 文本补丁：品牌占位、版本号、LIMITS_RAW 快照来源（母版当前前端里提取）
+def apply_js_repl(js, version, brand, master_js):
+    m = re.search(r'const LIMITS_RAW = ".*?";', master_js, re.S)
+    assert m, "master app.js 中未找到 LIMITS_RAW"
+    js = js.replace('"__LIMITS_RAW__";', m.group(0)[len('const LIMITS_RAW = '):])
+    js = js.replace('/* 前端逻辑 —— 所有目标页共用供应商库 */',
+                    '/* %s 前端逻辑 —— 所有目标页共用供应商库 */' % brand)
+    # 注入：云端一键更新模块（依赖 api()/toast()/confirmDlg()，追加在文件末尾安全）
+    js = js + JS_UPDATE_TEMPLATE.replace("__VERSION__", version)
+    return js
+
 
 JS_UPDATE_TEMPLATE = r'''
 
@@ -97,208 +114,7 @@ async function updPoll() {
 }
 '''
 
-# 替换 server.make_server：保留原语义（返回 ThreadingHTTPServer 或端口占用时 None），
-# 但把 Handler 包一层 UpdateHandler，增加 /api/update/* 路由（检查/下载/校验/覆盖重启）。
-# 用到的模块级全局（json/os/re/sys/time/threading/subprocess/urllib/DATA_DIR/Handler/
-# ThreadingHTTPServer/get_proxy/CREATE_NO_WINDOW）均为母版 server 模块已有名字。
-PY_UPDATE_TEMPLATE = r'''
-def make_server():
-    import hashlib
-
-    APP_VERSION = "__VERSION__"
-    UPDATE_REPO = "__REPO__"
-
-    UPD = {"stage": "idle", "detail": "", "got": 0, "total": 0,
-           "latest": "", "url": "", "asset": "", "asset_url": "", "digest": ""}
-    UPD_LOCK = threading.Lock()
-
-    def _proxy_opener():
-        try:
-            px = get_proxy()
-        except Exception:
-            px = None
-        if px:
-            return urllib.request.build_opener(
-                urllib.request.ProxyHandler({"http": px, "https": px}))
-        return urllib.request.build_opener()
-
-    def _ver_tuple(s):
-        s = re.sub(r"^[vV]", "", str(s or "").strip())
-        out = []
-        for part in s.split("."):
-            m = re.match(r"\d+", part)
-            out.append(int(m.group()) if m else 0)
-        while len(out) < 3:
-            out.append(0)
-        return tuple(out[:3])
-
-    def _upd_check():
-        headers = {"Accept": "application/vnd.github+json",
-                   "User-Agent": "APISwitch-updater"}
-        # 可选：设置环境变量 GITHUB_TOKEN 可绕过匿名限流（仅开发者调试用，不影响普通用户）
-        tok = os.environ.get("GITHUB_TOKEN") or ""
-        if tok:
-            headers["Authorization"] = "Bearer " + tok
-        req = urllib.request.Request(
-            "https://api.github.com/repos/" + UPDATE_REPO + "/releases/latest",
-            headers=headers)
-        with _proxy_opener().open(req, timeout=15) as r:
-            j = json.loads(r.read().decode("utf-8"))
-        tag = j.get("tag_name") or ""
-        has = _ver_tuple(APP_VERSION) < _ver_tuple(tag)
-        asset_url, name, size, digest = "", "", 0, ""
-        for a in j.get("assets") or []:
-            an = a.get("name") or ""
-            if an.lower().endswith(".exe"):
-                asset_url = a.get("browser_download_url") or ""
-                name, size = an, a.get("size") or 0
-                digest = a.get("digest") or ""
-                break
-        has = bool(has and asset_url)
-        with UPD_LOCK:
-            UPD.update(latest=tag, url=j.get("html_url") or "", asset=name,
-                       asset_url=asset_url, digest=digest)
-            UPD["got"] = 0
-            UPD["total"] = size
-        return {"ok": True, "current": APP_VERSION, "latest": tag,
-                "has_update": has, "url": j.get("html_url") or "",
-                "asset": name, "size": size}
-
-    def _upd_download():
-        with UPD_LOCK:
-            if UPD["stage"] == "downloading":
-                return
-            UPD.update(stage="downloading", got=0, detail="")
-            url, digest = UPD["asset_url"], UPD["digest"]
-        dest = os.path.join(DATA_DIR, "update.pending.exe")
-        part = dest + ".part"
-        try:
-            os.makedirs(DATA_DIR, exist_ok=True)
-            req = urllib.request.Request(url, headers={"User-Agent": "APISwitch-updater"})
-            h = hashlib.sha256()
-            got = 0
-            with _proxy_opener().open(req, timeout=60) as r, open(part, "wb") as f:
-                total = int(r.headers.get("Content-Length") or 0)
-                with UPD_LOCK:
-                    if total:
-                        UPD["total"] = total
-                while True:
-                    chunk = r.read(262144)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    h.update(chunk)
-                    got += len(chunk)
-                    with UPD_LOCK:
-                        UPD["got"] = got
-            if digest:
-                want = digest.split(":", 1)[-1]
-                if h.hexdigest().lower() != want.lower():
-                    raise ValueError("SHA-256 校验失败，已放弃安装")
-            os.replace(part, dest)
-            with UPD_LOCK:
-                UPD.update(stage="downloaded", got=got)
-        except Exception as e:
-            try:
-                os.remove(part)
-            except OSError:
-                pass
-            with UPD_LOCK:
-                UPD.update(stage="error", detail=str(e)[:200])
-
-    def _upd_apply():
-        old = sys.executable
-        new = os.path.join(DATA_DIR, "update.pending.exe")
-        if not os.path.exists(new):
-            return {"ok": False, "error": "尚未下载新版本"}
-        pid = os.getpid()
-        pid = os.getpid()
-        bat = os.path.join(DATA_DIR, "update_apply.bat")
-        # 关键点：
-        # 1) PyInstaller onefile 的父(bootloader)进程退出前，exe 一直被锁；且父进程退出时
-        #    会删除自己的 _MEI 临时目录。若在删除完成前启动新实例，新实例（继承 _MEIPASS2
-        #    指向旧目录）会失败。因此：move 成功 == 父进程已完全退出 == 临时目录已清理。
-        # 2) 批处理由 Python 派生，环境里带着 _MEIPASS2，启动新实例前必须清空。
-        # 3) 不按 PID 等待（父进程 PID 与子进程不同），直接重试 move，最长约 60 秒。
-        script = (
-            "@echo off\r\n"
-            'set "_PYI_ARCHIVE_FILE="\r\n'
-            'set "_PYI_APPLICATION_HOME_DIR="\r\n'
-            'set "_MEIPASS2="\r\n'
-            'set "MEIPASS2="\r\n'
-            "set /a t=0\r\n"
-            ":loop\r\n"
-            "ping -n 2 127.0.0.1 >nul\r\n"
-            'move /y "%s" "%s" >nul 2>&1\r\n'
-            "if not errorlevel 1 goto ready\r\n"
-            "set /a t+=1\r\n"
-            "if %%t%% lss 60 goto loop\r\n"
-            "goto cleanup\r\n"
-            ":ready\r\n"
-            "ping -n 3 127.0.0.1 >nul\r\n"
-            'start "" "%s"\r\n'
-            ":cleanup\r\n"
-            'del "%%~f0" >nul 2>&1\r\n'
-        ) % (new, old, old)
-        try:
-            with open(bat, "w", encoding="mbcs") as f:
-                f.write(script)
-            # 关键：剔除引导器传给子进程的内部变量（PyInstaller 6.x 为 _PYI_*，旧版为 _MEIPASS2）。
-            # 否则 cmd 及 start 出的新 exe 会继承「归档/临时目录」指针，去加载旧进程
-            # 已删除的 _MEI 目录而报「Failed to load Python DLL」。
-            clean_env = {k: v for k, v in os.environ.items()
-                         if not k.upper().startswith(("_PYI_", "MEIPASS", "_MEIPASS"))}
-            subprocess.Popen(["cmd", "/c", bat], env=clean_env,
-                             creationflags=CREATE_NO_WINDOW, close_fds=True)
-        except Exception as e:
-            return {"ok": False, "error": str(e)[:200]}
-
-        def _die():
-            time.sleep(0.6)
-            os._exit(0)
-        threading.Thread(target=_die, daemon=True).start()
-        return {"ok": True}
-
-    class UpdateHandler(Handler):
-        def do_GET(self):
-            if not self._host_allowed():
-                self._send(403, {"error": "forbidden"})
-                return
-            p = self.path.split("?", 1)[0]
-            if p == "/api/update/check":
-                try:
-                    self._send(200, _upd_check())
-                except Exception as e:
-                    self._send(200, {"ok": False, "error": str(e)[:200]})
-                return
-            if p == "/api/update/status":
-                with UPD_LOCK:
-                    self._send(200, dict(UPD))
-                return
-            return Handler.do_GET(self)
-
-        def do_POST(self):
-            if not self._host_allowed():
-                self._send(403, {"error": "forbidden"})
-                return
-            p = self.path.split("?", 1)[0]
-            if p == "/api/update/start":
-                threading.Thread(target=_upd_download, daemon=True).start()
-                self._send(200, {"ok": True})
-                return
-            if p == "/api/update/apply":
-                self._send(200, _upd_apply())
-                return
-            return Handler.do_POST(self)
-
-    try:
-        return ThreadingHTTPServer(("127.0.0.1", 8765), UpdateHandler)
-    except OSError:
-        return None
-'''
-
 # 修复「全新安装 load_data 空库返回结构不完整」bug 的替换函数（与母版字节码同逻辑 + 补齐顶层键）。
-# BUILTIN_ORIGINAL / 内置供应商 id 是母版既有全局名，替换后继续可用。
 NEW_ENSURE_BUILTIN_SRC = '''
 def ensure_builtin(data):
     data.setdefault("qoder", {"imports": []})
@@ -339,11 +155,9 @@ def patch_consts(code, table):
     return code.replace(co_consts=tuple(consts)), changed
 
 
-def build_replacement_function(src, target_name, old_code):
-    mod = compile(src, "<repack>", "exec")
-    fn = next(k for k in mod.co_consts if isinstance(k, types.CodeType) and k.co_name == target_name)
-    return fn.replace(co_filename=old_code.co_filename, co_firstlineno=old_code.co_firstlineno,
-                      co_name=old_code.co_name, co_qualname=old_code.co_qualname)
+def build_replacement_function(fn_code, old_code):
+    return fn_code.replace(co_filename=old_code.co_filename, co_firstlineno=old_code.co_firstlineno,
+                           co_name=old_code.co_name, co_qualname=old_code.co_qualname)
 
 
 def read_archive(data):
@@ -370,6 +184,7 @@ def main():
 
     R = load_replacements()
     server_str = R["SERVER_STR"]
+    brand = R.get("BRAND", "API Switch")
 
     data = open(a.src, "rb").read()
     archStart, pyvers, pylib, entries = read_archive(data)
@@ -383,7 +198,7 @@ def main():
     app_code, ac = patch_consts(marshal.loads(rd(app_entry)), R["APP_STR"])
     print("app patches:", ac)
 
-    # 2) 后端 server 模块（PYZ 内），含 ensure_builtin 逻辑修复 + make_server 更新路由注入
+    # 2) 后端 server 模块（PYZ 内）：字符串补丁 + ensure_builtin 修复 + make_server 全量替换
     update_repo = R.get("UPDATE_REPO", "")
     assert update_repo, "replacements.json 需含 UPDATE_REPO（GitHub 用户名/仓库）"
     pyz_e = next(e for e in entries if e["name"] == "PYZ.pyz")
@@ -393,12 +208,13 @@ def main():
     typ_s, off_s, len_s = dict(pyz_toc)["server"]
     server_code, sc = patch_consts(marshal.loads(zlib.decompress(pyz_bytes[off_s:off_s + len_s])), server_str)
     old_fn = next(k for k in server_code.co_consts if isinstance(k, types.CodeType) and k.co_name == "ensure_builtin")
-    new_fn = build_replacement_function(NEW_ENSURE_BUILTIN_SRC, "ensure_builtin", old_fn)
+    new_fn = build_replacement_function(
+        _compile_src(NEW_ENSURE_BUILTIN_SRC, "ensure_builtin"), old_fn)
     server_code = server_code.replace(co_consts=tuple(new_fn if k is old_fn else k for k in server_code.co_consts))
-    # 注入一键更新后端：用带 /api/update/* 路由的 make_server 替换原实现
-    ms_src = PY_UPDATE_TEMPLATE.replace("__VERSION__", a.version).replace("__REPO__", update_repo)
+    ms_src = feature_backend.build_make_server_code(
+        version=a.version, repo=update_repo, update_enabled=True, brand=brand)
     old_ms = next(k for k in server_code.co_consts if isinstance(k, types.CodeType) and k.co_name == "make_server")
-    new_ms = build_replacement_function(ms_src, "make_server", old_ms)
+    new_ms = build_replacement_function(ms_src, old_ms)
     server_code = server_code.replace(co_consts=tuple(new_ms if k is old_ms else k for k in server_code.co_consts))
     print("server patches:", sc)
     assert ac >= 1 and sc >= 1, "sanity: 至少应有补丁命中；检查 replacements.json 是否完整"
@@ -411,22 +227,30 @@ def main():
     toc_bytes = marshal.dumps(new_toc)
     new_pyz = b'PYZ\x00' + pyz_bytes[4:8] + struct.pack('!i', 12 + len(body)) + body + toc_bytes
 
-    # 4) 前端
-    update_repo = R.get("UPDATE_REPO", "")
-    assert update_repo, "replacements.json 需含 UPDATE_REPO（GitHub 用户名/仓库）"
+    # 4) 前端：仓库三件套 + 补丁（HTML 锚点校验、JS 品牌/版本/LIMITS_RAW、更新模块注入、更新按钮）
+    old_js = None
+    for e in entries:
+        if e["name"].replace("\\", "/").lower() == "static/app.js":
+            old_js = rd(e).decode("utf-8")
+    assert old_js, "母版 static/app.js 未找到"
     new_blobs = {}
     for e in entries:
-        n = e["name"].lower().replace("\\", "/")
+        n = e["name"].replace("\\", "/").lower()
         if n == "static/index.html":
-            html = rd(e).decode("utf-8")
+            html = open(os.path.join(FRONT_DIR, "index.html"), encoding="utf-8").read()
             for old, new in R["HTML_REPL"]:
                 assert old in html, "HTML anchor missing: %r" % old[:40]
                 html = html.replace(old, new)
+            html = html.replace(
+                '  <div class="header-actions">',
+                '  <div class="header-actions">\n    <button id="btn-update" class="btn ghost hidden" title="发现新版本时点击可前往下载">发现新版本</button>')
             new_blobs[e["name"]] = html.encode("utf-8")
         elif n == "static/app.js":
-            js = rd(e).decode("utf-8")
-            js = js + (JS_UPDATE_TEMPLATE.replace("__VERSION__", a.version).replace("__REPO__", update_repo))
+            js = open(os.path.join(FRONT_DIR, "app.js"), encoding="utf-8").read()
+            js = apply_js_repl(js, a.version, brand, old_js)
             new_blobs[e["name"]] = js.encode("utf-8")
+        elif n == "static/style.css":
+            new_blobs[e["name"]] = open(os.path.join(FRONT_DIR, "style.css"), "rb").read()
         elif n == "app.ico":
             ico = os.path.join(HERE, "new_icon.ico")
             if os.path.exists(ico):
@@ -451,6 +275,32 @@ def main():
     with open(a.out, "wb") as f:
         f.write(bytes(out_body) + bytes(newtoc) + cookie)
     print("written:", a.out, os.path.getsize(a.out), "bytes, version", a.version)
+
+    # 6) 自检：重读输出、全模块解压、关键路由存在
+    from PyInstaller.archive.readers import CArchiveReader
+    cr = CArchiveReader(a.out)
+    pyz = cr.open_embedded_archive('PYZ.pyz')
+    ok = 0
+    for name in pyz.toc:
+        pyz.extract(name); ok += 1
+    sc2 = pyz.extract('server')
+    ms = next(k for k in sc2.co_consts if isinstance(k, types.CodeType) and k.co_name == "make_server")
+    kids = {k.co_name for k in ms.co_consts if isinstance(k, types.CodeType)}
+    need = ['qn_import', 'q2_import', 'zc_import', 'zc_set_enabled', 'tw_prepare', '_api_get', '_api_post']
+    missing = [n for n in need if n not in kids]
+    js = cr.extract("static\\app.js").decode("utf-8")
+    assert "/api/zcode/import" in js and APP_VERSION_OK(js, a.version) and not missing, \
+        (missing, "version" if not APP_VERSION_OK(js, a.version) else "")
+    print("self-check: PYZ", ok, "modules | backend routes OK | APP_VERSION", a.version)
+
+
+def _compile_src(src, name):
+    mod = compile(src, "<repack>", "exec")
+    return next(k for k in mod.co_consts if isinstance(k, types.CodeType) and k.co_name == name)
+
+
+def APP_VERSION_OK(js, version):
+    return ('const APP_VERSION = "%s";' % version) in js
 
 
 if __name__ == "__main__":
