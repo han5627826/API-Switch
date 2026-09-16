@@ -45,6 +45,54 @@ def make_server():
                 urllib.request.ProxyHandler({"http": px, "https": px}))
         return urllib.request.build_opener()
 
+    def _net_open(req, timeout):
+        """按应用代理发起请求；代理失败（限流 403 / 连接错误等）时回退直连重试一次。
+
+        背景：代理多为共享出口 IP，匿名访问 api.github.com 每小时仅 60 次，
+        极易 403 rate limit；直连通常可用。没有回退会导致静默更新检查失败、
+        用户收不到新版本提示。
+        注意两点：
+        1. urllib 的 ProxyHandler 会调用 req.set_proxy() 原地改写 Request
+           （host 变为代理地址），因此重试必须用全新的 Request。
+        2. 只调用一次 get_proxy()，用返回值同时构造代理/直连两个 opener，
+           避免二次调用因数据目录锁等偶发异常被吞掉后丢失回退路径。"""
+        try:
+            px = get_proxy()
+        except Exception:
+            px = None
+        if px:
+            # 应用内配置了代理：先走应用代理，失败回退直连
+            openers = [urllib.request.build_opener(
+                           urllib.request.ProxyHandler({"http": px, "https": px})),
+                       urllib.request.build_opener(
+                           urllib.request.ProxyHandler({}))]  # 显式直连
+        else:
+            # 未配置应用代理：默认 opener 会用系统代理（含注册表/WPAD 设置），
+            # 系统代理失败（共享出口 IP 触发 GitHub 匿名限流 403 等）同样回退直连
+            openers = [urllib.request.build_opener(),
+                       urllib.request.build_opener(
+                           urllib.request.ProxyHandler({}))]
+        last = None
+        for i, op in enumerate(openers):
+            try:
+                if i:
+                    # 重试必须换全新 Request：首个 opener 失败时可能已把 req
+                    # 的 host 改写为代理地址（ProxyHandler.set_proxy 副作用）
+                    fresh = urllib.request.Request(
+                        req.full_url, headers=dict(req.headers),
+                        data=req.data, method=req.get_method())
+                else:
+                    fresh = req
+                return op.open(fresh, timeout=timeout)
+            except Exception as e:
+                last = e
+                if i < len(openers) - 1:
+                    try:
+                        time.sleep(0.3)
+                    except Exception:
+                        pass
+        raise last
+
     def _ver_tuple(s):
         s = re.sub(r"^[vV]", "", str(s or "").strip())
         out = []
@@ -688,7 +736,7 @@ def make_server():
             headers["Authorization"] = "Bearer " + tok
         req = urllib.request.Request(
             "https://api.github.com/repos/" + UPDATE_REPO + "/releases/latest", headers=headers)
-        with _proxy_opener().open(req, timeout=15) as r:
+        with _net_open(req, 15) as r:
             j = json.loads(r.read().decode("utf-8"))
         tag = j.get("tag_name") or ""
         has = _ver_tuple(APP_VERSION) < _ver_tuple(tag)
@@ -720,7 +768,7 @@ def make_server():
             req = urllib.request.Request(url, headers={"User-Agent": "APISwitch-updater"})
             h = hashlib.sha256()
             got = 0
-            with _proxy_opener().open(req, timeout=60) as r, open(part, "wb") as f:
+            with _net_open(req, 60) as r, open(part, "wb") as f:
                 total = int(r.headers.get("Content-Length") or 0)
                 with UPD_LOCK:
                     if total:
