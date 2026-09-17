@@ -886,6 +886,128 @@ def make_server():
         return result
 
     # =====================================================================
+    # Codex config.toml 增量编辑（只动模型相关配置，保留用户其它设置）
+    # =====================================================================
+    # 母版 apply_provider 用「首次备份快照 + 新 provider 块」整体覆盖 config.toml，
+    # 用户之后在 Codex 内修改的主题 / 字体 / 语言 / 插件 / 信任目录等会被旧快照冲掉。
+    # 这里改为增量编辑：只替换 managed block 与 [model_providers.*] 段，
+    # 并同步顶层模型键，其余内容逐行原样保留。
+    _MANAGED_KEYS = ("model_provider", "model", "review_model",
+                     "model_reasoning_effort", "disable_response_storage",
+                     "model_catalog_json")
+    _MANAGED_BEGIN = "# ==== "
+    _MANAGED_END = "# ==== End managed block ===="
+
+    def _strip_managed(text):
+        """移除 managed block、历史 [model_providers.*] 段与 managed 顶层键，返回剩余文本。"""
+        lines = text.splitlines()
+        out = []
+        in_block = False          # managed block 内
+        in_prov = False           # [model_providers.*] 段内
+        for ln in lines:
+            s = ln.strip()
+            if s.startswith(_MANAGED_BEGIN) and "managed by" in s:
+                in_block = True
+                continue
+            if in_block:
+                if s == _MANAGED_END:
+                    in_block = False
+                continue
+            if s.startswith("[model_providers."):
+                in_prov = True
+                continue
+            if in_prov:
+                if s.startswith("["):           # 下一个段开始
+                    in_prov = False
+                else:
+                    continue
+            if re.match(r'^(model_provider|model|review_model|model_reasoning_effort|'
+                        r'disable_response_storage|model_catalog_json)\s*=', s):
+                continue
+            out.append(ln)
+        return "\n".join(out)
+
+    def _apply_provider_config(p):
+        """增量写入供应商配置：不整体覆盖，用户其它设置原样保留。"""
+        try:
+            with open(CONFIG_FILE, encoding="utf-8") as f:
+                cur = f.read()
+        except OSError:
+            cur = ""
+        body = _strip_managed(cur)
+        lines = ["# ==== %s - managed by Codex API 切换器 ====" % p["name"],
+                 'model_provider = "%s"' % p["id"],
+                 'model = "%s"' % p.get("model", "")]
+        if p.get("review_model"):
+            lines.append('review_model = "%s"' % p["review_model"])
+        if p.get("reasoning_effort"):
+            lines.append('model_reasoning_effort = "%s"' % p["reasoning_effort"])
+        lines.append("disable_response_storage = true")
+        lines.append("model_catalog_json = '%s'" % CATALOG_FILE)
+        lines.append("# ==== End managed block ====")
+        block = "\n".join(lines)
+        section = provider_section(p)
+        # managed block 插到文件最前（顶层键必须在任何 [section] 之前）
+        new = block + "\n" + body.rstrip("\n") + "\n" + section if body.strip() \
+            else block + "\n" + section
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(new)
+        os.replace(tmp, CONFIG_FILE)
+
+    def _restore_original_config():
+        """增量还原：只移除工具注入的内容（managed block / model_providers 段 / 顶层模型键），
+        用户自己的设置（主题、字体、插件、信任目录等）不受影响。"""
+        try:
+            with open(CONFIG_FILE, encoding="utf-8") as f:
+                cur = f.read()
+        except OSError:
+            return
+        body = _strip_managed(cur)
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(body.lstrip("\n") if not body.startswith("\n") else body)
+        os.replace(tmp, CONFIG_FILE)
+
+    def _switch_provider(pid):
+        """/api/switch 的增量实现：替代母版 do_POST 分支（整体覆盖会冲掉用户设置）。"""
+        with LOCK:
+            data = load_data()
+        if pid == "original":
+            _restore_original_config()
+            # auth.json 还原（与母版 apply_original 相同语义：有备份才覆盖）
+            if os.path.exists(AUTH_BACKUP_FILE):
+                try:
+                    with open(AUTH_BACKUP_FILE, encoding="utf-8") as f:
+                        content = f.read()
+                    with open(AUTH_FILE, "w", encoding="utf-8") as f:
+                        f.write(content)
+                except OSError:
+                    pass
+        else:
+            p = find_provider(data, pid)
+            if not p:
+                raise ValueError("供应商不存在")
+            p = dict(p)
+            if not p.get("model") and p.get("models"):
+                p["model"] = p["models"][0]
+            ensure_base()                     # 首次切换快照原始配置（保持母版行为）
+            _apply_provider_config(p)
+            # 模型目录（与母版 apply_provider 一致）
+            models = p.get("models") or ([p["model"]] if p.get("model") else [])
+            catalog = {m: build_catalog_entry(m, p) for m in models}
+            with open(CATALOG_FILE, "w", encoding="utf-8") as f:
+                json.dump(catalog, f, ensure_ascii=False, indent=2)
+            # 鉴权
+            if auth_mode(p) == "authjson":
+                if not p.get("api_key"):
+                    raise ValueError("auth.json 鉴权方式需要填写 API Key")
+                write_auth_json(p["api_key"])
+            elif p.get("env_key") and p.get("api_key"):
+                set_user_env(p["env_key"], p["api_key"])
+        return detect_active()
+
+    # =====================================================================
     # 路由挂载
     # =====================================================================
     _orig_get = Handler.do_GET
@@ -989,6 +1111,10 @@ def make_server():
         if path == "/api/uninstall":
             self._send(200, _uninstall_cleanup(body.get("restoreOriginal", True)))
             return True
+        if path == "/api/switch":
+            active = _switch_provider(body.get("id"))
+            self._send(200, {"ok": True, "active": active})
+            return True
         return False
 
     MY_POST_PATHS = {
@@ -997,6 +1123,7 @@ def make_server():
         "/api/zcode/import", "/api/zcode/enable", "/api/zcode/delete",
         "/api/trae/models/delete", "/api/trae/models/toggle", "/api/trae/prepare2",
         "/api/update/start", "/api/update/apply", "/api/uninstall",
+        "/api/switch",
     }
 
     def _wrapped_get(self):
