@@ -53,7 +53,7 @@ def main():
         ["git", "add", "-A"],
         ["git", "commit", "-m", f"release: {tag}"],
         ["git", "tag", tag],
-        ["git", "push", "origin", "main", "--follow-tags"],
+        ["git", "push", "origin", "main", tag],
         ["gh", "release", "create", tag, staged, "--title", tag, "--notes", notes],
     ]
     for c in cmds:
