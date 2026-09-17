@@ -322,6 +322,9 @@ def main():
     html2 = cr.extract("static\\index.html").decode("utf-8")
     assert 'id="btn-check-update"' in html2 and html2.index('id="btn-net"') < html2.index('id="btn-check-update"') \
         and html2.index('id="btn-check-update"') < html2.index('id="btn-update"'), "前端按钮布局自检失败"
+    # 「卸载并清除数据」按钮：位于顶栏「检查更新」右侧（不在网络设置弹窗内）
+    assert html2.index('id="btn-check-update"') < html2.index('id="btn-uninstall"') < html2.index('id="net-mask"'), \
+        "btn-uninstall 必须位于顶栏（检查更新之后、网络设置弹窗之前）"
     print("self-check: PYZ", ok, "modules | backend routes OK | APP_VERSION", a.version)
 
 

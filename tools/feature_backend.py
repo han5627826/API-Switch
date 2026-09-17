@@ -874,6 +874,12 @@ def make_server():
         if os.path.isdir(DATA_DIR):
             rm(DATA_DIR)
 
+        # 2b) 旧版数据目录（~/.codex/api-switch）。若不删除，下次启动
+        # load_data → migrate_legacy_data 会把它复制回 DATA_DIR，供应商“复活”。
+        legacy_dir = os.path.join(CODEX_DIR, "api-switch")
+        if os.path.isdir(legacy_dir):
+            rm(legacy_dir)
+
         # 3) 模型规格缓存
         rm(os.path.join(HOME, ".codex", "codex-models.json"))
 
