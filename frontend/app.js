@@ -121,6 +121,38 @@ async function refresh(keepSelected) {
   renderZcode();
   renderTrae();
   renderBanners();
+  showAppVersion();
+  if (state.legacy_pending && !legacyHandled) showLegacyDlg(state.legacy_pending);
+}
+
+/* ---------------- 标题版本号 ---------------- */
+function showAppVersion() {
+  const el = $("#app-ver");
+  if (!el) return;
+  const v = String(state.version || "").trim();
+  el.textContent = v ? (v.startsWith("v") || v.startsWith("V") ? v : "v" + v) : "";
+}
+
+/* ---------------- 旧版供应商导入确认 ---------------- */
+let legacyHandled = false;
+
+function showLegacyDlg(list) {
+  const box = $("#legacy-list");
+  if (!box) return;
+  box.innerHTML = (list || []).map((p) =>
+    `<div class="legacy-item"><span class="legacy-name">${esc(p.name)}</span>` +
+    `<span class="badge">${p.models || 0} 模型</span></div>`).join("");
+  $("#legacy-mask").classList.remove("hidden");
+}
+
+async function resolveLegacy(keep) {
+  const r = await api("/api/legacy/resolve", { action: keep ? "keep" : "reset" });
+  legacyHandled = true;
+  $("#legacy-mask").classList.add("hidden");
+  if (!r.ok) { toast(r.error || "操作失败", true); return; }
+  toast(keep ? "已保留旧版本供应商" : "已删除所有添加的供应商，恢复默认");
+  if (!keep) selected = "original";
+  await refresh(true);
 }
 
 /* ---------------- 顶部模块 Tab ---------------- */
@@ -948,6 +980,8 @@ $("#zc-provider").addEventListener("change", renderZcode);
 $("#zc-import").onclick = zcodeImport;
 $("#t-provider").addEventListener("change", () => { providerSel = $("#t-provider"); });
 $("#t-prepare").onclick = traePrepare;
+$("#legacy-yes").onclick = () => resolveLegacy(true);
+$("#legacy-no").onclick = () => resolveLegacy(false);
 
 /* ---------------- 网络设置 ---------------- */
 function openNet() {

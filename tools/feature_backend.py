@@ -722,6 +722,8 @@ def make_server():
             "targets": _target_info(),
             "qoder_imports": (data.get("qoder") or {}).get("imports", []),
             "trae_imports": (data.get("trae") or {}).get("imports", []),
+            "version": APP_VERSION,
+            "legacy_pending": _LEGACY_PENDING,
         }
 
     # =====================================================================
@@ -801,6 +803,7 @@ def make_server():
         if not os.path.exists(new):
             return {"ok": False, "error": "尚未下载新版本"}
         bat = os.path.join(DATA_DIR, "update_apply.bat")
+        exe_dir = os.path.dirname(old)
         script = (
             "@echo off\r\n"
             'set "_PYI_ARCHIVE_FILE="\r\n'
@@ -818,9 +821,12 @@ def make_server():
             ":ready\r\n"
             "ping -n 3 127.0.0.1 >nul\r\n"
             'start "" "%s"\r\n'
+            "rem 清理同目录旧版本 exe（排除当前程序自身），更新即替换、不留旧版\r\n"
+            'for %%F in ("%s\\APISwitch*.exe") do if /i not "%%~fF"=="%s" del /f /q "%%~fF" >nul 2>&1\r\n'
+            'for %%F in ("%s\\API Switch*.exe") do if /i not "%%~fF"=="%s" del /f /q "%%~fF" >nul 2>&1\r\n'
             ":cleanup\r\n"
             'del "%%~f0" >nul 2>&1\r\n'
-        ) % (new, old, old)
+        ) % (new, old, old, exe_dir, old, exe_dir, old)
         try:
             with open(bat, "w", encoding="mbcs") as f:
                 f.write(script)
@@ -884,6 +890,67 @@ def make_server():
         rm(os.path.join(HOME, ".codex", "codex-models.json"))
 
         return result
+
+    # =====================================================================
+    # 旧版本供应商识别与导入确认（手动下载新版后首启弹窗）
+    # =====================================================================
+    # 旧版本（如 1.0.0）手动下载新版运行时，供应商库随数据目录一并被读到。
+    # 首次以新版启动时若检测到用户添加过的供应商且从未确认过，弹出
+    # 「是否导入」询问：是 = 原样保留；否 = 删除全部自定义供应商，恢复默认。
+    # 确认状态以 DATA_DIR/providers.confirmed 标记文件记录，之后不再询问。
+    _IMPORT_FLAG = os.path.join(DATA_DIR, "providers.confirmed")
+
+    def _legacy_mark():
+        """写入「已确认」标记（之后启动不再弹导入询问）。"""
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(_IMPORT_FLAG, "w", encoding="utf-8") as f:
+                f.write(APP_VERSION)
+        except OSError:
+            pass
+
+    def _scan_legacy_providers():
+        """检测待确认的旧版供应商：无确认标记且存在用户添加的供应商时返回列表。"""
+        try:
+            with LOCK:
+                data = load_data()
+        except Exception:
+            return None
+        if os.path.exists(_IMPORT_FLAG):
+            return None
+        provs = [p for p in (data.get("codex", {}).get("providers") or [])
+                 if isinstance(p, dict) and p.get("id") != "original"]
+        if not provs:
+            return None
+        return [{"id": p.get("id"), "name": p.get("name") or p.get("id"),
+                 "models": len(p.get("models") or ([p["model"]] if p.get("model") else []) or [])}
+                for p in provs]
+
+    def _legacy_resolve(action):
+        """处理导入询问：keep = 保留现状；reset = 删除全部自定义供应商并恢复默认。"""
+        if action == "reset":
+            with LOCK:
+                data = load_data()
+            active = detect_active()
+            provs = data["codex"].get("providers") or []
+            keep = [p for p in provs if p.get("id") == "original"]
+            removed = len(provs) - len(keep)
+            data["codex"]["providers"] = keep
+            save_data(data)
+            if active and active != "original":
+                # Codex 仍指向已删除的供应商：还原为官方原始配置
+                try:
+                    _switch_provider("original")
+                except Exception:
+                    pass
+        else:
+            removed = 0
+        _legacy_mark()
+        return {"ok": True, "action": action, "removed": removed}
+
+    # 启动时计算一次（load_data 内部会先完成 legacy 数据目录迁移，
+    # 因此旧数据目录 ~/.codex/api-switch 的供应商同样能被识别到）
+    _LEGACY_PENDING = _scan_legacy_providers()
 
     # =====================================================================
     # Codex config.toml 增量编辑（只动模型相关配置，保留用户其它设置）
@@ -1108,6 +1175,9 @@ def make_server():
         if path == "/api/update/apply":
             self._send(200, _upd_apply())
             return True
+        if path == "/api/legacy/resolve":
+            self._send(200, _legacy_resolve(str(body.get("action") or "keep")))
+            return True
         if path == "/api/uninstall":
             self._send(200, _uninstall_cleanup(body.get("restoreOriginal", True)))
             return True
@@ -1123,7 +1193,7 @@ def make_server():
         "/api/zcode/import", "/api/zcode/enable", "/api/zcode/delete",
         "/api/trae/models/delete", "/api/trae/models/toggle", "/api/trae/prepare2",
         "/api/update/start", "/api/update/apply", "/api/uninstall",
-        "/api/switch",
+        "/api/switch", "/api/legacy/resolve",
     }
 
     def _wrapped_get(self):
@@ -1145,6 +1215,9 @@ def make_server():
         if p not in MY_POST_PATHS:
             # 非本模块路由：交回原始实现（原始 do_POST 自行读取请求体，禁止提前消费）
             _orig_post(self)
+            # 用户已在新版中主动操作过（添加/编辑/删除供应商等），写入确认标记，
+            # 避免下次启动被误判为「旧版待导入数据」
+            _legacy_mark()
             return
         if not self._host_allowed():
             self._send(403, {"error": "forbidden"})

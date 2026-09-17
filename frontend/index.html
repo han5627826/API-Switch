@@ -19,7 +19,7 @@
   <div class="brand">
     <div class="logo"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3L4 7l4 4"/><path d="M4 7h16"/><path d="M16 21l4-4-4-4"/><path d="M20 17H4"/></svg></div>
     <div>
-      <h1>API 修改器</h1>
+      <h1>API 修改器<span id="app-ver" class="app-ver"></span></h1>
       <p class="sub">AI 工具自定义模型 · 统一供应商管理</p>
     </div>
   </div>
@@ -358,6 +358,27 @@
     <div class="confirm-btns">
       <button id="confirm-no" class="btn ghost">取消</button>
       <button id="confirm-yes" class="btn primary">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 旧版供应商导入确认（检测到旧版本数据时首启弹出，必须二选一） -->
+<div id="legacy-mask" class="hidden">
+  <div id="legacy-box">
+    <div class="modal-head">
+      <div>
+        <h2>发现旧版本保存的供应商</h2>
+        <div class="modal-sub">自动识别到旧版本写入的数据，是否导入到当前版本？</div>
+      </div>
+    </div>
+    <div class="legacy-body">
+      <div id="legacy-list" class="legacy-list"></div>
+      <div class="diag warn">选「<b>是</b>」：保留这些供应商，继续使用。<br>选「<b>否</b>」：删除以上全部供应商并恢复至默认状态（仅保留官方原始配置）。</div>
+    </div>
+    <div class="modal-foot">
+      <span class="spacer"></span>
+      <button id="legacy-no" class="btn ghost">否</button>
+      <button id="legacy-yes" class="btn primary">是</button>
     </div>
   </div>
 </div>

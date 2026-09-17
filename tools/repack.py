@@ -314,7 +314,8 @@ def main():
     sc2 = pyz.extract('server')
     ms = next(k for k in sc2.co_consts if isinstance(k, types.CodeType) and k.co_name == "make_server")
     kids = {k.co_name for k in ms.co_consts if isinstance(k, types.CodeType)}
-    need = ['qn_import', 'q2_import', 'zc_import', 'zc_set_enabled', 'tw_prepare', '_api_get', '_api_post']
+    need = ['qn_import', 'q2_import', 'zc_import', 'zc_set_enabled', 'tw_prepare',
+            '_api_get', '_api_post', '_scan_legacy_providers', '_legacy_resolve']
     missing = [n for n in need if n not in kids]
     js = cr.extract("static\\app.js").decode("utf-8")
     assert "/api/zcode/import" in js and APP_VERSION_OK(js, a.version) and not missing, \
