@@ -945,6 +945,72 @@ function confirmDlg(msg) {
   });
 }
 
+/* ---------------- 供应商配置迁移 ---------------- */
+async function exportConfiguration() {
+  const btn = $("#btn-export-config");
+  if (btn) { btn.disabled = true; btn.textContent = "导出中…"; }
+  try {
+    const payload = await api("/api/providers/export");
+    if (!payload || !Array.isArray(payload.providers)) {
+      throw new Error("后端返回的配置格式无效");
+    }
+    const text = JSON.stringify(payload, null, 2);
+    const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const day = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `api-switch-config-${day}.json`;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast(`已导出 ${payload.providers.length} 个供应商（文件包含 API Key，请妥善保管）`);
+  } catch (e) {
+    toast("导出失败：" + (e && e.message || e), true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "导出配置"; }
+  }
+}
+
+async function importConfigurationFile(file) {
+  if (!file) return;
+  const btn = $("#btn-import-config");
+  try {
+    let payload;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch (e) {
+      throw new Error("文件不是有效的 JSON");
+    }
+    if (!payload || !Array.isArray(payload.providers)) {
+      throw new Error("文件中没有有效的供应商列表");
+    }
+    const count = payload.providers.length;
+    if (!count) {
+      throw new Error("文件中的供应商列表为空");
+    }
+    if (!(await confirmDlg(
+      `将导入 ${count} 个供应商；同 ID 或同名称与 Base URL 的配置会更新现有条目。\n` +
+      "导入文件可能包含 API Key，确认继续吗？"))) return;
+    if (btn) { btn.disabled = true; btn.textContent = "导入中…"; }
+    const r = await api("/api/providers/import", payload);
+    if (!r.ok) {
+      toast(r.error || "导入失败", true);
+      return;
+    }
+    await refresh(true);
+    toast(`导入完成：新增 ${r.added || 0} 个，更新 ${r.updated || 0} 个`);
+  } catch (e) {
+    toast("导入失败：" + (e && e.message || e), true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "导入配置"; }
+    const inp = $("#config-file-input");
+    if (inp) inp.value = "";
+  }
+}
+
 /* ---------------- init ---------------- */
 $("#btn-add").onclick = () => openModal(null);
 $("#btn-add-lib").onclick = () => openModal(null);
@@ -962,6 +1028,9 @@ $("#key-eye").onclick = () => {
   k.type = k.type === "password" ? "text" : "password";
 };
 $("#btn-restart").onclick = restartCodex;
+$("#btn-import-config").onclick = () => $("#config-file-input").click();
+$("#config-file-input").onchange = (e) => importConfigurationFile(e.target.files[0]);
+$("#btn-export-config").onclick = exportConfiguration;
 $("#f-authmode").addEventListener("change", syncAuthMode);
 $("#f-model").addEventListener("change", () => { limitAuto = true; detectLimits($("#f-model").value); });
 ["f-ctx", "f-max"].forEach((id) => $("#" + id).addEventListener("input", () => {

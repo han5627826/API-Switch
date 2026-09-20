@@ -727,6 +727,130 @@ def make_server():
         }
 
     # =====================================================================
+    # 供应商配置迁移（跨设备导入 / 导出）
+    # =====================================================================
+    _PROVIDER_EXPORT_FORMAT = "api-switch-provider-config"
+    _PROVIDER_FIELDS = (
+        "name", "base_url", "wire_api", "auth_mode", "api_key", "env_key",
+        "reasoning_effort", "models", "model", "review_model",
+        "context_window", "max_output_tokens",
+    )
+
+    def _provider_export():
+        """返回可迁移的供应商配置；API Key 以明文写入导出文件，供新设备使用。"""
+        with LOCK:
+            data = load_data()
+        providers = []
+        for p in data.get("codex", {}).get("providers", []):
+            if not isinstance(p, dict) or p.get("id") == "original":
+                continue
+            item = {"id": p.get("id")}
+            for key in _PROVIDER_FIELDS:
+                if key == "models":
+                    item[key] = [str(m).strip() for m in (p.get(key) or [])
+                                 if str(m).strip()]
+                elif key in p:
+                    item[key] = p.get(key)
+            providers.append(item)
+        return {
+            "format": _PROVIDER_EXPORT_FORMAT,
+            "version": 1,
+            "providers": providers,
+        }
+
+    def _provider_import(payload):
+        """校验并合并迁移文件中的供应商，落盘时继续使用本机 DPAPI 加密。"""
+        if not isinstance(payload, dict):
+            raise ValueError("导入文件格式错误")
+        providers = payload.get("providers")
+        if not isinstance(providers, list):
+            raise ValueError("导入文件缺少供应商列表")
+        if len(providers) > 500:
+            raise ValueError("一次最多导入 500 个供应商")
+
+        def _text(value, default=""):
+            return str(value if value is not None else default).strip()
+
+        def _models(value):
+            if not isinstance(value, list):
+                return []
+            out = []
+            seen = set()
+            for m in value:
+                s = _text(m)
+                if s and s not in seen:
+                    seen.add(s)
+                    out.append(s)
+                if len(out) >= 200:
+                    break
+            return out
+
+        with LOCK:
+            data = load_data()
+            ensure_builtin(data)
+            current = data["codex"]["providers"]
+            added = updated = skipped = 0
+            for raw in providers:
+                if not isinstance(raw, dict):
+                    skipped += 1
+                    continue
+                name = _text(raw.get("name"))
+                base_url = _text(raw.get("base_url"))
+                if not name or not base_url:
+                    skipped += 1
+                    continue
+
+                raw_id = _text(raw.get("id"))
+                match = None
+                if raw_id and raw_id != "original":
+                    match = next((p for p in current if p.get("id") == raw_id), None)
+                if match is None:
+                    match = next((p for p in current
+                                  if p.get("id") != "original"
+                                  and _text(p.get("name")) == name
+                                  and _text(p.get("base_url")) == base_url), None)
+
+                if match is None:
+                    pid = sanitize_id(name, raw_id)
+                    if pid == "original":
+                        pid = "provider-" + str(_uuid.uuid4())
+                    used = {str(p.get("id")) for p in current}
+                    stem = pid
+                    n = 2
+                    while pid in used:
+                        pid = stem + "-" + str(n)
+                        n += 1
+                    match = {"id": pid}
+                    current.append(match)
+                    added += 1
+                else:
+                    updated += 1
+
+                for key in _PROVIDER_FIELDS:
+                    if key == "models":
+                        if key in raw:
+                            match[key] = _models(raw.get(key))
+                    elif key in raw:
+                        value = raw.get(key)
+                        if key in ("name", "base_url", "wire_api", "auth_mode",
+                                   "api_key", "env_key", "reasoning_effort",
+                                   "model", "review_model"):
+                            match[key] = _text(value)
+                        elif key in ("context_window", "max_output_tokens"):
+                            try:
+                                match[key] = max(1, int(value))
+                            except (TypeError, ValueError):
+                                pass
+
+                # 旧版导出可不带模型字段；确保当前数据结构可直接被前端编辑。
+                match.setdefault("models", [])
+                match.setdefault("model", "")
+            save_data(data)
+        _legacy_mark()
+        return {"ok": True, "added": added, "updated": updated,
+                "skipped": skipped, "total": added + updated}
+
+    # =====================================================================
     # 更新检查（后端代理）
     # =====================================================================
     def _upd_check():
@@ -1089,6 +1213,9 @@ def make_server():
         if path == "/api/targets":
             self._send(200, {"ok": True, "targets": _target_info(), "version": APP_VERSION})
             return True
+        if path == "/api/providers/export":
+            self._send(200, _provider_export())
+            return True
         if path == "/api/qodercn/list":
             self._send(200, {"ok": True, "file": qn_config_path(_QODER_DIRS),
                              "installed": qn_installed(_QODER_DIRS), "running": qn_running(),
@@ -1118,6 +1245,9 @@ def make_server():
         return False
 
     def _api_post(self, path, body):
+        if path == "/api/providers/import":
+            self._send(200, _provider_import(body))
+            return True
         if path == "/api/qodercn/import":
             r = qn_import(body.get("providerId"), body.get("models") or [], _QODER_DIRS)
             r["ok"] = True
@@ -1190,6 +1320,7 @@ def make_server():
         return False
 
     MY_POST_PATHS = {
+        "/api/providers/import",
         "/api/qodercn/import", "/api/qodercn/delete",
         "/api/qoder2/import", "/api/qoder2/delete",
         "/api/zcode/import", "/api/zcode/enable", "/api/zcode/delete",

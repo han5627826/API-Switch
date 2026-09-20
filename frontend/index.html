@@ -24,12 +24,15 @@
     </div>
   </div>
   <div class="header-actions">
+    <button id="btn-import-config" class="btn ghost" title="Import Configuration：从 JSON 文件导入供应商配置">导入配置</button>
+    <button id="btn-export-config" class="btn ghost" title="Export Configuration：将供应商配置导出为 JSON 文件">导出配置</button>
     <button id="btn-refresh" class="btn ghost" title="重新读取供应商、模型与各目标状态">⟳ 刷新</button>
     <button id="btn-net" class="btn ghost" title="测试连接/获取模型的网络代理设置">网络设置</button>
     <button id="btn-check-update" class="btn ghost" title="手动检查是否为最新版本">检查更新</button>
     <button id="btn-uninstall" class="btn danger" title="还原 Codex 原始配置，并删除本工具的全部数据（供应商库与加密 Key，不可恢复）">卸载并清除数据</button>
   </div>
 </header>
+<input id="config-file-input" class="hidden" type="file" accept="application/json,.json">
 
 <nav id="tabs">
   <button class="tab active" data-view="targets">目标管理<span class="home">首页</span></button>

@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.8] - 2026-09-20
+
+### 新增
+
+- 顶栏新增「导入配置」与「导出配置」按钮，可将供应商库导出为 JSON 并在其他设备一键导入。
+- 导入配置按供应商 ID 或名称 + Base URL 合并，避免重复创建；导入后 API Key 仍以本机 DPAPI 加密保存。
+
 ## [1.2.7] - 2026-09-18
 
 ### 修复与改进

@@ -342,7 +342,7 @@ def main():
     kids = {k.co_name for k in ms.co_consts if isinstance(k, types.CodeType)}
     need = ['qn_import', 'q2_import', 'zc_import', 'zc_set_enabled', 'tw_prepare',
             '_api_get', '_api_post', '_scan_legacy_providers', '_legacy_resolve',
-            '_repair_catalog', '_catalog_sentinel']
+            '_repair_catalog', '_catalog_sentinel', '_provider_export', '_provider_import']
     missing = [n for n in need if n not in kids]
     js = cr.extract("static\\app.js").decode("utf-8")
     assert "/api/zcode/import" in js and APP_VERSION_OK(js, a.version) and not missing, \
@@ -353,6 +353,8 @@ def main():
     # 「卸载并清除数据」按钮：位于顶栏「检查更新」右侧（不在网络设置弹窗内）
     assert html2.index('id="btn-check-update"') < html2.index('id="btn-uninstall"') < html2.index('id="net-mask"'), \
         "btn-uninstall 必须位于顶栏（检查更新之后、网络设置弹窗之前）"
+    assert html2.index('id="btn-import-config"') < html2.index('id="btn-export-config"') \
+        < html2.index('id="btn-refresh"'), "导入/导出按钮必须位于刷新按钮左侧"
     print("self-check: PYZ", ok, "modules | backend routes OK | APP_VERSION", a.version)
 
 

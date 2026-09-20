@@ -173,13 +173,16 @@ def main():
     ms = next(k for k in sc2.co_consts if isinstance(k, types.CodeType) and k.co_name == "make_server")
     kids = {k.co_name for k in ms.co_consts if isinstance(k, types.CodeType)}
     need = ['qn_import', 'q2_import', 'zc_import', 'tw_prepare', '_api_get', '_api_post',
-            '_uninstall_cleanup', '_repair_catalog', '_catalog_sentinel']
+            '_uninstall_cleanup', '_repair_catalog', '_catalog_sentinel',
+            '_provider_export', '_provider_import']
     missing = [x for x in need if x not in kids]
     js2 = cr.extract("static" + chr(92) + "app.js").decode("utf-8")
     assert not missing and '/api/uninstall' in js2 and '__LIMITS_RAW__' not in js2, (missing,)
     html2 = cr.extract("static" + chr(92) + "index.html").decode("utf-8")
     i_chk, i_un, i_net = html2.index('btn-check-update'), html2.index('btn-uninstall'), html2.index('id="net-mask"')
     assert i_chk < i_un < i_net, "前端按钮布局自检失败"
+    assert html2.index('id="btn-import-config"') < html2.index('id="btn-export-config"') \
+        < html2.index('id="btn-refresh"'), "导入/导出按钮必须位于刷新按钮左侧"
     print("self-check: backend routes OK | uninstall(legacy cleanup) OK | frontend OK")
 
 
