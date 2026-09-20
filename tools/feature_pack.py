@@ -6,7 +6,7 @@ feature_pack.py —— 桌面版「API修改器」更新打包：对现有 exe �
 与 tools/repack.py 共用 feature_backend.FEATURE_SERVER_SRC（功能后端唯一源码）。
 区别于 repack（发布版品牌定制）：
   - 不改品牌文案（桌面版品牌就是「API 修改器」，replacements 补丁不适用）
-  - 不注入前端更新模块（APP_VERSION='desktop'，UPDATE_ENABLED=False）
+  - 不注入前端更新模块（UPDATE_ENABLED=False）
   - 前端三件套用仓库 ../frontend 原样（HTML_REPL 是发布版品牌替换，不应用），
     仅注入「发现新版本」按钮占位（隐藏，不启用时不显示）——不需要，跳过。
 用法：
@@ -66,6 +66,7 @@ def main():
     ap.add_argument("--src", required=True, help="桌面版 exe 路径（就地更新请与 --out 相同前先备份）")
     ap.add_argument("--out", required=True, help="输出 exe 路径")
     ap.add_argument("--limits", default="", help="LIMITS_RAW 快照文本文件（缺省沿用母版现有快照）")
+    ap.add_argument("--version", default="desktop", help="写入后端状态与标题栏的版本号")
     a = ap.parse_args()
 
     data = open(a.src, "rb").read()
@@ -85,7 +86,14 @@ def main():
     old_fn = next(k for k in server_code.co_consts if isinstance(k, types.CodeType) and k.co_name == "ensure_builtin")
     new_fn = build_replacement_function(_compile_src(NEW_ENSURE_BUILTIN_SRC, "ensure_builtin"), old_fn)
     server_code = server_code.replace(co_consts=tuple(new_fn if k is old_fn else k for k in server_code.co_consts))
-    ms_src = feature_backend.build_make_server_code(version="desktop", repo="", update_enabled=False,
+    # apply_provider 替换：codex-models.json 写顶层 {"models": [...]}（母版字典格式会令 Codex config_load 失败）
+    old_ap = next(k for k in server_code.co_consts if isinstance(k, types.CodeType) and k.co_name == "apply_provider")
+    new_ap = build_replacement_function(_compile_src(feature_backend.NEW_APPLY_PROVIDER_SRC, "apply_provider"), old_ap)
+    server_code = server_code.replace(co_consts=tuple(new_ap if k is old_ap else k for k in server_code.co_consts))
+    old_up = next(k for k in server_code.co_consts if isinstance(k, types.CodeType) and k.co_name == "upstream_json")
+    new_up = build_replacement_function(_compile_src(feature_backend.NEW_UPSTREAM_JSON_SRC, "upstream_json"), old_up)
+    server_code = server_code.replace(co_consts=tuple(new_up if k is old_up else k for k in server_code.co_consts))
+    ms_src = feature_backend.build_make_server_code(version=a.version, repo="", update_enabled=False,
                                                     brand="API 修改器")
     old_ms = next(k for k in server_code.co_consts if isinstance(k, types.CodeType) and k.co_name == "make_server")
     new_ms = build_replacement_function(ms_src, old_ms)
@@ -145,9 +153,27 @@ def main():
     cr = CArchiveReader(a.out)
     pyz = cr.open_embedded_archive('PYZ.pyz')
     sc2 = pyz.extract('server')
+    up = next(k for k in sc2.co_consts if isinstance(k, types.CodeType) and k.co_name == "upstream_json")
+    assert "User-Agent: claude-cli/2.0.0 (external, cli)" in up.co_consts, "AgentRouter 请求头补丁缺失"
+    # catalog 格式自检：apply_provider 必须写顶层 {"models": [...]}（Codex 严格校验该结构）
+    import json as _json, tempfile as _tf
+    ap = next(k for k in sc2.co_consts if isinstance(k, types.CodeType) and k.co_name == "apply_provider")
+    with _tf.TemporaryDirectory() as _td:
+        _bp, _cp, _cat = (os.path.join(_td, x) for x in ("base.toml", "config.toml", "catalog.json"))
+        open(_bp, "w", encoding="utf-8").close()
+        g = {"ensure_base": lambda: True, "BASE_FILE": _bp,
+             "provider_header": lambda p: "hdr\n", "provider_section": lambda p: "sec\n",
+             "CONFIG_FILE": _cp, "CATALOG_FILE": _cat, "json": _json,
+             "build_catalog_entry": lambda m, p: {"slug": m},
+             "auth_mode": lambda p: "env", "write_auth_json": lambda k: None,
+             "set_user_env": lambda k, v: None}
+        types.FunctionType(ap, g)({"model": "m1", "models": ["m1", "m2"]})
+        _c = _json.load(open(_cat, encoding="utf-8"))
+        assert list(_c.keys()) == ["models"] and [e["slug"] for e in _c["models"]] == ["m1", "m2"], _c
     ms = next(k for k in sc2.co_consts if isinstance(k, types.CodeType) and k.co_name == "make_server")
     kids = {k.co_name for k in ms.co_consts if isinstance(k, types.CodeType)}
-    need = ['qn_import', 'q2_import', 'zc_import', 'tw_prepare', '_api_get', '_api_post', '_uninstall_cleanup']
+    need = ['qn_import', 'q2_import', 'zc_import', 'tw_prepare', '_api_get', '_api_post',
+            '_uninstall_cleanup', '_repair_catalog', '_catalog_sentinel']
     missing = [x for x in need if x not in kids]
     js2 = cr.extract("static" + chr(92) + "app.js").decode("utf-8")
     assert not missing and '/api/uninstall' in js2 and '__LIMITS_RAW__' not in js2, (missing,)

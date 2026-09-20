@@ -235,6 +235,15 @@ def main():
     new_fn = build_replacement_function(
         _compile_src(NEW_ENSURE_BUILTIN_SRC, "ensure_builtin"), old_fn)
     server_code = server_code.replace(co_consts=tuple(new_fn if k is old_fn else k for k in server_code.co_consts))
+    # apply_provider 替换：codex-models.json 写顶层 {"models": [...]}（母版字典格式会令 Codex config_load 失败）
+    old_ap = next(k for k in server_code.co_consts if isinstance(k, types.CodeType) and k.co_name == "apply_provider")
+    new_ap = build_replacement_function(
+        _compile_src(feature_backend.NEW_APPLY_PROVIDER_SRC, "apply_provider"), old_ap)
+    server_code = server_code.replace(co_consts=tuple(new_ap if k is old_ap else k for k in server_code.co_consts))
+    old_up = next(k for k in server_code.co_consts if isinstance(k, types.CodeType) and k.co_name == "upstream_json")
+    new_up = build_replacement_function(
+        _compile_src(feature_backend.NEW_UPSTREAM_JSON_SRC, "upstream_json"), old_up)
+    server_code = server_code.replace(co_consts=tuple(new_up if k is old_up else k for k in server_code.co_consts))
     ms_src = feature_backend.build_make_server_code(
         version=a.version, repo=update_repo, update_enabled=True, brand=brand)
     old_ms = next(k for k in server_code.co_consts if isinstance(k, types.CodeType) and k.co_name == "make_server")
@@ -312,10 +321,28 @@ def main():
     for name in pyz.toc:
         pyz.extract(name); ok += 1
     sc2 = pyz.extract('server')
+    up = next(k for k in sc2.co_consts if isinstance(k, types.CodeType) and k.co_name == "upstream_json")
+    assert "User-Agent: claude-cli/2.0.0 (external, cli)" in up.co_consts, "AgentRouter 请求头补丁缺失"
+    # catalog 格式自检：apply_provider 必须写顶层 {"models": [...]}（Codex 严格校验该结构）
+    import json as _json, tempfile as _tf
+    ap = next(k for k in sc2.co_consts if isinstance(k, types.CodeType) and k.co_name == "apply_provider")
+    with _tf.TemporaryDirectory() as _td:
+        _bp, _cp, _cat = (os.path.join(_td, x) for x in ("base.toml", "config.toml", "catalog.json"))
+        open(_bp, "w", encoding="utf-8").close()
+        g = {"ensure_base": lambda: True, "BASE_FILE": _bp,
+             "provider_header": lambda p: "hdr\n", "provider_section": lambda p: "sec\n",
+             "CONFIG_FILE": _cp, "CATALOG_FILE": _cat, "json": _json,
+             "build_catalog_entry": lambda m, p: {"slug": m},
+             "auth_mode": lambda p: "env", "write_auth_json": lambda k: None,
+             "set_user_env": lambda k, v: None}
+        types.FunctionType(ap, g)({"model": "m1", "models": ["m1", "m2"]})
+        _c = _json.load(open(_cat, encoding="utf-8"))
+        assert list(_c.keys()) == ["models"] and [e["slug"] for e in _c["models"]] == ["m1", "m2"], _c
     ms = next(k for k in sc2.co_consts if isinstance(k, types.CodeType) and k.co_name == "make_server")
     kids = {k.co_name for k in ms.co_consts if isinstance(k, types.CodeType)}
     need = ['qn_import', 'q2_import', 'zc_import', 'zc_set_enabled', 'tw_prepare',
-            '_api_get', '_api_post', '_scan_legacy_providers', '_legacy_resolve']
+            '_api_get', '_api_post', '_scan_legacy_providers', '_legacy_resolve',
+            '_repair_catalog', '_catalog_sentinel']
     missing = [n for n in need if n not in kids]
     js = cr.extract("static\\app.js").decode("utf-8")
     assert "/api/zcode/import" in js and APP_VERSION_OK(js, a.version) and not missing, \

@@ -716,7 +716,7 @@ function renderDetail() {
     fr("推理力度", esc(p.reasoning_effort || "跟随模型目录默认"));
     fr("上下文 / 输出", `${p.context_window} / ${p.max_output_tokens} tokens`);
     fr("Review 模型", esc(p.review_model || "-"));
-    fr("模型列表", (p.models || []).map((m) => `<span class="chip mono" style="margin:0 4px 4px 0">${esc(m)}</span>`).join("") || "-", true);
+    fr("模型列表", (p.models || []).map((m) => `<span class="chip mono">${esc(m)}</span>`).join("") || "-", true);
   }
   d.innerHTML = `
     <div class="d-head"><h2>${esc(p.name)}</h2>${isActive ? '<span class="badge badge-ok">使用中</span>' : ""}

@@ -227,6 +227,7 @@ main { flex: 1; min-height: 0; overflow-y: auto; position: relative; z-index: 5;
 .badge-brand { background: rgba(99,102,241,.08); border-color: rgba(99,102,241,.28); color: var(--accent); }
 .badge.gray { background: transparent; color: var(--faint); }
 .chip {
+  display: inline-block; margin: 4px;
   font-size: 12px; border: 1px solid var(--line); border-radius: var(--r-sm);
   padding: 3px 9px; background: var(--field); color: var(--txt);
   transition: border-color .18s, transform .18s;

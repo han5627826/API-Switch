@@ -1061,8 +1061,10 @@ def make_server():
             ensure_base()                     # 首次切换快照原始配置（保持母版行为）
             _apply_provider_config(p)
             # 模型目录（与母版 apply_provider 一致）
+            # 顶层必须是 {"models": [...]} —— Codex 对该结构有严格校验，
+            # 写成 {模型名: 条目} 字典会在启动时 config_load 失败（桌面版显示「Windows 安装未完成」）
             models = p.get("models") or ([p["model"]] if p.get("model") else [])
-            catalog = {m: build_catalog_entry(m, p) for m in models}
+            catalog = {"models": [build_catalog_entry(m, p) for m in models]}
             with open(CATALOG_FILE, "w", encoding="utf-8") as f:
                 json.dump(catalog, f, ensure_ascii=False, indent=2)
             # 鉴权
@@ -1218,6 +1220,9 @@ def make_server():
             # 用户已在新版中主动操作过（添加/编辑/删除供应商等），写入确认标记，
             # 避免下次启动被误判为「旧版待导入数据」
             _legacy_mark()
+            # 兜底：母版路由（如 /api/restart-codex）处理后确保 catalog 格式正确，
+            # 防止并存的旧版实例写坏 codex-models.json 导致 Codex config_load 失败
+            _repair_catalog()
             return
         if not self._host_allowed():
             self._send(403, {"error": "forbidden"})
@@ -1231,16 +1236,63 @@ def make_server():
     Handler.do_GET = _wrapped_get
     Handler.do_POST = _wrapped_post
 
+    # ---- codex-models.json 格式自愈 ----
+    # 旧版本/母版可能把该文件写成 {模型名: 条目} 字典格式，Codex 要求顶层
+    # {"models": [...]}，坏格式会触发 config_load 失败（桌面版「Windows 安装未完成」）。
+    # 即使本版本所有写入点已修正，用户机器上可能同时运行旧版实例，其写入会
+    # 随时把文件写坏。此哨兵每 5 秒检测并修复一次，兜底所有来源；_wrapped_post
+    # 在母版路由处理后也会调一次，确保"重启 Codex"前格式正确。
+    def _repair_catalog():
+        try:
+            with open(CATALOG_FILE, encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception:
+            return False
+        if not isinstance(d, dict) or "models" in d or not d:
+            return False
+        entries = [d[k] for k in d]
+        tmp = CATALOG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"models": entries}, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, CATALOG_FILE)
+        return True
+
+    def _catalog_sentinel():
+        import time as _time
+        while True:
+            try:
+                _repair_catalog()
+            except Exception:
+                pass
+            _time.sleep(5)
+
+    threading.Thread(target=_catalog_sentinel, daemon=True).start()
+
     # 单实例保护：Windows 上 SO_REUSEADDR 允许多进程同时绑定同一端口，
     # 请求会被随机分发（实测会造成双实例数据错乱）。禁用地址复用，
-    # 让第二个实例绑定失败并退出（make_server 返回 None → main 直接退出）。
+    # 让第二个实例绑定失败并退出（8765 端口冲突时直接终止进程，绝不留僵尸 GUI）。
     class _SingleInstanceServer(ThreadingHTTPServer):
         allow_reuse_address = False
 
     try:
         return _SingleInstanceServer(("127.0.0.1", 8765), Handler)
     except OSError:
-        return None
+        # 端口已被占用（通常是旧版本实例仍在运行）。
+        # 母版 start_backend 对 None 只是 return（子线程退出），留下"有界面无后端"
+        # 的僵尸实例——界面操作会发往占用端口的旧版后端，写出旧格式配置导致问题复发。
+        # 直接退出整个进程并弹窗提示用户先关闭已有实例。
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                0, "API Switch 已有实例正在运行（端口 8765 被占用）。\n\n"
+                   "请先关闭所有已打开的 API Switch / API修改器 窗口，\n"
+                   "再重新启动本程序。\n\n"
+                   "多个版本同时运行时，界面操作会发往旧版后端，\n"
+                   "导致 Codex 配置被写坏（config_load 失败）。",
+                "API Switch - 启动失败", 0x10)
+        except Exception:
+            pass
+        os._exit(1)
 '''
 
 
@@ -1256,3 +1308,72 @@ def build_make_server_code(version="0.0.0", repo="", update_enabled=False, brand
     mod = compile(src, "<features>", "exec")
     fn = next(k for k in mod.co_consts if isinstance(k, types.CodeType) and k.co_name == "make_server")
     return fn
+
+# 母版 apply_provider 的替换源码（repack.py / feature_pack.py 共用，机制与 ensure_builtin 相同）。
+# 唯一差异：codex-models.json 必须写成顶层 {"models": [...]} 数组结构。
+# 母版写成 {模型名: 条目} 字典，Codex 校验失败（missing field `models`），
+# 桌面版启动即报 config_load（「Windows 安装未完成」错误页）。
+# 其余逻辑与母版字节码逐行等价（整体覆盖 config.toml + 鉴权处理）。
+# 转义说明：本字符串经 compile 再执行，\\n → 源码 "\n"、\\\\ → 源码 "\\"（路径单反斜杠）。
+NEW_APPLY_PROVIDER_SRC = '''
+def apply_provider(p):
+    """把供应商 p 写为当前生效配置。"""
+    if not ensure_base():
+        raise ValueError("未检测到 Codex 配置（%USERPROFILE%\\\\.codex\\\\config.toml 不存在），请先安装并至少启动一次 Codex")
+    p = dict(p)
+    if not p.get("model") and p.get("models"):
+        p["model"] = p["models"][0]
+    with open(BASE_FILE, encoding="utf-8") as f:
+        base = f.read()
+    config = provider_header(p) + "\\n" + base + provider_section(p)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        f.write(config)
+    models = p.get("models") or ([p["model"]] if p.get("model") else [])
+    catalog = {"models": [build_catalog_entry(m, p) for m in models]}
+    with open(CATALOG_FILE, "w", encoding="utf-8") as f:
+        json.dump(catalog, f, ensure_ascii=False, indent=2)
+    if auth_mode(p) == "authjson":
+        if not p.get("api_key"):
+            raise ValueError("auth.json 鉴权方式需要填写 API Key")
+        write_auth_json(p["api_key"])
+    elif p.get("env_key") and p.get("api_key"):
+        set_user_env(p["env_key"], p["api_key"])
+'''
+
+
+# 母版所有上游请求共用此函数。AgentRouter 的模型接口会检查客户端标识，
+# 因此只对该域名补充其 CLI 兼容的 User-Agent；其它供应商沿用原请求头。
+NEW_UPSTREAM_JSON_SRC = r'''
+def upstream_json(url, key, payload=None, method=None, timeout=25, proxy=None):
+    from urllib.parse import urlsplit
+
+    curl = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "curl.exe")
+    if not os.path.exists(curl):
+        curl = "curl"
+    cmd = [curl, "-s", "-m", str(timeout), url,
+           "-H", f"Authorization: Bearer {key}",
+           "-H", "Content-Type: application/json",
+           "-w", "\n__CODE__%{http_code}"]
+    if urlsplit(url).hostname == "agentrouter.org":
+        cmd += ["-H", "User-Agent: claude-cli/2.0.0 (external, cli)"]
+    proxy = proxy if proxy is not None else get_proxy()
+    if proxy:
+        cmd += ["-x", proxy]
+    if method:
+        cmd += ["-X", method]
+    if payload is not None:
+        cmd += ["-d", json.dumps(payload)]
+    out = subprocess.run(cmd, capture_output=True, timeout=timeout + 15,
+                         creationflags=CREATE_NO_WINDOW).stdout.decode("utf-8", "replace")
+    body, _, code = out.rpartition("\n__CODE__")
+    try:
+        status = int(code.strip())
+    except ValueError:
+        status = 0
+    if not body.strip():
+        return 0, {}
+    try:
+        return status, json.loads(body)
+    except ValueError:
+        return status, {"error": {"message": "响应不是有效 JSON: " + body[:120]}}
+'''
