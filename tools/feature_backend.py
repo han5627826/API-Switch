@@ -104,6 +104,124 @@ def make_server():
         return tuple(out[:3])
 
     # =====================================================================
+    # Anthropic Messages 供应商（wire_api == "anthropic"）上游访问
+    # =====================================================================
+    # 端点约定（同 Messages API）：
+    #   拉模型列表：GET  {base}/v1/models    -> {"data":[{"id":...}]}
+    #   连接测试：  POST {base}/v1/messages  -> {"content":[{"type":"text","text":...}]}
+    # 请求头同时携带 Authorization: Bearer 与 x-api-key + anthropic-version，
+    # 官方端点与 new-api/one-api 类中转站均兼容。
+    def _anthropic_base(u):
+        s = (u or "").strip().rstrip("/")
+        low = s.lower()
+        if low.endswith("/anthropic"):
+            return s
+        if low.endswith("/v1"):
+            return s[:-3].rstrip("/")
+        return s
+
+    def _anthropic_fetch(url, key, payload=None, timeout=25):
+        """访问 Anthropic 端点并返回解析后的 dict；失败抛 ValueError（母端错误处理按母版惯例统一兜底）。"""
+        headers = {
+            "Authorization": "Bearer " + (key or ""),
+            "x-api-key": (key or ""),
+            "anthropic-version": "2023-06-01",
+        }
+        data = None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(payload).encode("utf-8")
+        try:
+            with _net_open(urllib.request.Request(url, data=data, headers=headers),
+                           timeout) as r:
+                raw = r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read().decode("utf-8", "replace")[:300]
+            except OSError:
+                detail = ""
+            raise ValueError("HTTP %s: %s" % (e.code, detail))
+        except Exception as e:
+            raise ValueError(str(e)[:200])
+        if not raw.strip():
+            raise ValueError("响应为空")
+        try:
+            j = json.loads(raw)
+        except ValueError:
+            raise ValueError("响应不是有效 JSON: " + raw[:120])
+        if isinstance(j, dict) and j.get("type") == "error":
+            err = j.get("error") if isinstance(j.get("error"), dict) else {}
+            raise ValueError(str(err.get("message") or "未知错误"))
+        return j
+
+    def anthropic_models(p):
+        """拉取 Messages 模型列表，返回模型 ID 列表；全部候选失败时抛 ValueError（同母版 fetch_models）。"""
+        key = p.get("api_key") or ""
+        base = _anthropic_base(p.get("base_url"))
+        if base.lower().endswith("/v1"):
+            candidates = [base + "/models"]
+        else:
+            candidates = [base + "/v1/models", base + "/models"]
+        last_err = None
+        for url in candidates:
+            try:
+                j = _anthropic_fetch(url, key, timeout=15)
+                models = [str(m.get("id")).strip() for m in (j.get("data") or [])
+                          if isinstance(m, dict) and m.get("id")]
+                if models:
+                    return models
+                last_err = ValueError("接口返回空模型列表")
+            except ValueError as e:
+                last_err = e
+        raise last_err or ValueError("未知错误")
+
+    def anthropic_test(p):
+        """Messages 连接测试，返回 {'ok','ms','model','reply'|'error'}（同母版 test_provider 惯例，不抛异常）。"""
+        base = _anthropic_base(p.get("base_url"))
+        model = (p.get("model") or (p.get("models") or [""])[0] or "").strip()
+        t0 = time.time()
+        try:
+            if not model:
+                raise ValueError("请先选择默认模型")
+            j = _anthropic_fetch(base + "/v1/messages", p.get("api_key") or "",
+                                 payload={"model": model, "max_tokens": 8,
+                                          "messages": [{"role": "user", "content": "reply: OK"}]},
+                                 timeout=40)
+            ms = int((time.time() - t0) * 1000)
+            reply = "".join(b.get("text", "") for b in (j.get("content") or [])
+                            if isinstance(b, dict) and b.get("type") == "text")
+            return {"ok": True, "ms": ms, "model": model,
+                    "reply": (reply or "(空回复)").strip()[:120]}
+        except ValueError as e:
+            ms = int((time.time() - t0) * 1000)
+            return {"ok": False, "ms": ms, "model": model, "error": str(e)}
+
+    def _install_wire_helpers():
+        """让 wire_api == "anthropic" 的供应商走 Messages API（母端上游入口按 wire 路由）。
+
+        母版 do_POST 通过 LOAD_GLOBAL 在运行期查找模块全局 fetch_models / test_provider，
+        因此重绑定模块字典即可完成 wire 路由；其他供应商原样交回母版实现，
+        完全避免重新实现母版路由的请求体读取与错误兜底。"""
+        try:
+            _o_fetch = globals()["fetch_models"]
+            _o_test = globals()["test_provider"]
+        except KeyError:
+            return
+
+        def _wire_fetch(p):
+            if (p or {}).get("wire_api") == "anthropic":
+                return anthropic_models(p)
+            return _o_fetch(p)
+
+        def _wire_test(p, proxy=None):
+            if (p or {}).get("wire_api") == "anthropic":
+                return anthropic_test(p)
+            return _o_test(p, proxy)
+
+        globals()["fetch_models"] = _wire_fetch
+        globals()["test_provider"] = _wire_test
+
+    # =====================================================================
     # A) Qoder CN —— 与母版等价（~/.qoder-cn/settings.json）
     # =====================================================================
     _QODER_DIRS = (".qoder-cn",)
@@ -218,7 +336,9 @@ def make_server():
         base_url = (p.get("base_url") or "").strip()
         if not base_url:
             raise ValueError("该供应商未填写 Base URL")
-        protocol = (p.get("wire_api") or "responses") == "responses" and "openai-responses" or "openai"
+        wire = p.get("wire_api") or "responses"
+        protocol = ("anthropic" if wire == "anthropic"
+                    else "openai-responses" if wire == "responses" else "openai")
         obj = qn_load(nm)
         provs = obj.get("providers")
         if not isinstance(provs, dict):
@@ -408,7 +528,8 @@ def make_server():
         else:
             entry = dict(provs.get(target_id)) if isinstance(provs.get(target_id), dict) else {}
         entry["name"] = pname
-        entry["kind"] = "anthropic" if "/anthropic" in base_url.lower() else "openai"
+        entry["kind"] = ("anthropic" if (p.get("wire_api") == "anthropic"
+                                         or "/anthropic" in base_url.lower()) else "openai")
         opt = entry.get("options") if isinstance(entry.get("options"), dict) else {}
         opt["apiKey"] = api_key
         opt["baseURL"] = zc_norm_base(base_url)
@@ -1179,6 +1300,8 @@ def make_server():
             p = find_provider(data, pid)
             if not p:
                 raise ValueError("供应商不存在")
+            if p.get("wire_api") == "anthropic":
+                raise ValueError("Codex 暂不支持 Anthropic 原生协议，该供应商仅可用于模型列表获取 / 连接测试 / Qoder・ZCode 导入")
             p = dict(p)
             if not p.get("model") and p.get("models"):
                 p["model"] = p["models"][0]
@@ -1366,6 +1489,8 @@ def make_server():
 
     Handler.do_GET = _wrapped_get
     Handler.do_POST = _wrapped_post
+    # 上游入口按 wire 路由（Anthropic 供应商走 Messages API，其余交回母版）
+    _install_wire_helpers()
 
     # ---- codex-models.json 格式自愈 ----
     # 旧版本/母版可能把该文件写成 {模型名: 条目} 字典格式，Codex 要求顶层
@@ -1452,6 +1577,8 @@ def apply_provider(p):
     if not ensure_base():
         raise ValueError("未检测到 Codex 配置（%USERPROFILE%\\\\.codex\\\\config.toml 不存在），请先安装并至少启动一次 Codex")
     p = dict(p)
+    if p.get("wire_api") == "anthropic":
+        raise ValueError("Codex 暂不支持 Anthropic 原生协议，该供应商仅可用于模型列表获取 / 连接测试 / Qoder・ZCode 导入")
     if not p.get("model") and p.get("models"):
         p["model"] = p["models"][0]
     with open(BASE_FILE, encoding="utf-8") as f:

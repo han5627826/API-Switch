@@ -2,6 +2,18 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.9] - 2026-09-23
+
+### 新增
+
+- **API 格式新增 Anthropic**：添加 / 编辑供应商的「API 格式」新增 `Anthropic Messages（/v1/messages）`；「获取模型列表」走 `{base}/v1/models`，「测试连接」走 `{base}/v1/messages`，请求头同时携带 `Authorization: Bearer` 与 `x-api-key` + `anthropic-version`，官方端点与 new-api 类中转站均兼容。
+- 导入 Qoder / Qoder CN 时协议映射为 `anthropic`；导入 ZCode 时 `kind = "anthropic"`（URL 含 `/anthropic` 时同样识别）。
+- 「导出配置」改用系统「另存为」对话框，可自选保存目录；取消导出不再提示失败（旧运行环境回退默认下载目录）。
+
+### 说明
+
+- Codex 官方仅支持 Responses / Chat 两种 wire 协议：Anthropic 格式供应商点「启用此配置」会提示不支持，避免把 `wire_api = "anthropic"` 写入 config.toml 导致 Codex 启动时配置解析失败。
+
 ## [1.2.8] - 2026-09-20
 
 ### 新增

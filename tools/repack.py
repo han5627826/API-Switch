@@ -204,6 +204,8 @@ def main():
     ap.add_argument("--src", required=True, help="母版 exe 路径（只读，绝不修改）")
     ap.add_argument("--out", required=True, help="输出 exe 路径")
     ap.add_argument("--version", default="1.0.0", help="写入前端 APP_VERSION 的版本号")
+    ap.add_argument("--source-is-sanitized", action="store_true",
+                    help="允许使用已经完成品牌净化的成品作为母版（仅用于本地增量重打包）")
     a = ap.parse_args()
 
     R = load_replacements()
@@ -250,7 +252,12 @@ def main():
     new_ms = build_replacement_function(ms_src, old_ms)
     server_code = server_code.replace(co_consts=tuple(new_ms if k is old_ms else k for k in server_code.co_consts))
     print("server patches:", sc)
-    assert ac >= 1 and sc >= 1, "sanity: 至少应有补丁命中；检查 replacements.json 是否完整"
+    if a.source_is_sanitized:
+        assert ac == 0 and sc == 0, \
+            "--source-is-sanitized 仅适用于 app/server 均已完成净化的母版"
+        print("source already sanitized: branding replacement skipped")
+    else:
+        assert ac >= 1 and sc >= 1, "sanity: 至少应有补丁命中；检查 replacements.json 是否完整"
 
     # 3) 重建 PYZ（条目偏移以 PYZ 头后第 0 字节起算，需加 12 字节头偏移）
     body = b''; new_toc = []

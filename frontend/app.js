@@ -232,7 +232,7 @@ function renderProviderGrid() {
     const meta = isOriginal
       ? '<span class="badge">登录凭据</span>'
       : `<span class="badge">${models} 模型</span>` +
-        `<span class="badge">${p.wire_api === "chat" ? "Chat" : "Responses"}</span>` +
+        `<span class="badge">${wireName(p)}</span>` +
         (p.context_window ? `<span class="badge">上下文 ${fmtK(p.context_window)}</span>` : "");
     const initial = esc((p.name || "?").slice(0, 2).toUpperCase());
     card.innerHTML = `
@@ -261,6 +261,16 @@ function renderProviderGrid() {
 function fmtK(n) {
   n = +n || 0;
   return n >= 1000 ? (n % 1000 ? (n / 1000).toFixed(1) : n / 1000) + "K" : String(n);
+}
+
+/* API 格式标签：responses / chat / anthropic 统一出口 */
+function wireName(p) {
+  return p && p.wire_api === "chat" ? "Chat" : p && p.wire_api === "anthropic" ? "Anthropic" : "Responses";
+}
+function wireFullName(p) {
+  return p && p.wire_api === "chat" ? "Chat Completions (/v1/chat/completions)"
+    : p && p.wire_api === "anthropic" ? "Anthropic Messages（/v1/messages）"
+    : "Responses（原生 /responses）";
 }
 
 function renderTargetsList() {
@@ -303,7 +313,7 @@ function renderCodexConfig() {
       </div>
       <div class="cc-fmt">
         ${p && p.id === "original" ? '<div>登录凭据</div>' : `
-        <div>${p ? (p.wire_api === "chat" ? "Chat" : "Responses") + " · " + (p.auth_mode === "authjson" ? "auth.json" : "环境变量") : ""}</div>
+        <div>${p ? wireName(p) + " · " + (p.auth_mode === "authjson" ? "auth.json" : "环境变量") : ""}</div>
         <div>${p ? esc(p.model || (models[0] || "-")) : ""}${p && p.reasoning_effort ? " · " + esc(p.reasoning_effort) : ""}</div>`}
       </div>
     </div>
@@ -708,7 +718,7 @@ function renderDetail() {
     fr("API Key", "不需要（使用官方登录凭据）");
   } else {
     fr("Base URL", esc(p.base_url));
-    fr("API 格式", p.wire_api === "chat" ? "Chat Completions (/v1/chat/completions)" : "Responses（原生 /responses）");
+    fr("API 格式", wireFullName(p));
     fr("鉴权方式", p.auth_mode === "authjson" ? "auth.json（CC Switch 同款）" : "环境变量");
     fr("API Key", esc(maskKey(p.api_key)));
     if (p.env_key && p.auth_mode !== "authjson") fr("环境变量", esc(p.env_key));
@@ -946,6 +956,39 @@ function confirmDlg(msg) {
 }
 
 /* ---------------- 供应商配置迁移 ---------------- */
+async function saveConfigurationFile(text, suggestedName) {
+  // WebView2 / Chromium 支持 File System Access API 时，显示系统“另存为”对话框，
+  // 让用户明确选择保存目录；旧运行环境回退到浏览器默认下载目录。
+  if (typeof window.showSaveFilePicker === "function") {
+    const handle = await window.showSaveFilePicker({
+      suggestedName,
+      types: [{
+        description: "API Switch 配置文件",
+        accept: { "application/json": [".json"] },
+      }],
+    });
+    const writable = await handle.createWritable();
+    try {
+      await writable.write(text);
+    } finally {
+      await writable.close();
+    }
+    return true;
+  }
+
+  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = suggestedName;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return false;
+}
+
 async function exportConfiguration() {
   const btn = $("#btn-export-config");
   if (btn) { btn.disabled = true; btn.textContent = "导出中…"; }
@@ -955,20 +998,17 @@ async function exportConfiguration() {
       throw new Error("后端返回的配置格式无效");
     }
     const text = JSON.stringify(payload, null, 2);
-    const blob = new Blob([text], { type: "application/json;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
     const day = new Date().toISOString().slice(0, 10);
-    a.href = url;
-    a.download = `api-switch-config-${day}.json`;
-    a.style.display = "none";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    toast(`已导出 ${payload.providers.length} 个供应商（文件包含 API Key，请妥善保管）`);
+    const customPath = await saveConfigurationFile(text, `api-switch-config-${day}.json`);
+    toast(customPath
+      ? `已导出 ${payload.providers.length} 个供应商（文件包含 API Key，请妥善保管）`
+      : `已导出 ${payload.providers.length} 个供应商到默认下载目录（文件包含 API Key，请妥善保管）`);
   } catch (e) {
-    toast("导出失败：" + (e && e.message || e), true);
+    if (e && e.name === "AbortError") {
+      toast("已取消导出");
+    } else {
+      toast("导出失败：" + (e && e.message || e), true);
+    }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = "导出配置"; }
   }
