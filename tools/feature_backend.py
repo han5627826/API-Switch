@@ -854,7 +854,7 @@ def make_server():
     _PROVIDER_FIELDS = (
         "name", "base_url", "wire_api", "auth_mode", "api_key", "env_key",
         "reasoning_effort", "models", "model", "review_model",
-        "context_window", "max_output_tokens",
+        "context_window", "max_output_tokens", "image_models",
     )
 
     def _provider_export():
@@ -949,6 +949,9 @@ def make_server():
 
                 for key in _PROVIDER_FIELDS:
                     if key == "models":
+                        if key in raw:
+                            match[key] = _models(raw.get(key))
+                    elif key == "image_models":
                         if key in raw:
                             match[key] = _models(raw.get(key))
                     elif key in raw:
@@ -1329,6 +1332,80 @@ def make_server():
     _orig_get = Handler.do_GET
     _orig_post = Handler.do_POST
 
+    def _api_provider_save(body):
+        """保存供应商（复刻母版 /api/provider 全部校验与字段，额外保存 image_models）。
+
+        image_models：开启了图片输入的模型 id 列表；未携带时保持旧数据不动，
+        build_catalog_entry 会回退到内置规则自动识别。
+        """
+        with LOCK:
+            data = load_data()
+            p = body.get("provider") or {}
+            pid_new = sanitize_id(p.get("name"), p.get("id"))
+            old_id = p.get("id")
+            entry = {
+                "id": pid_new,
+                "name": (p.get("name") or "").strip() or pid_new,
+                "base_url": (p.get("base_url") or "").strip(),
+                "api_key": (p.get("api_key") or "").strip(),
+                "auth_mode": p.get("auth_mode") or "env",
+                "env_key": (p.get("env_key") or "").strip().upper(),
+                "wire_api": p.get("wire_api") or "responses",
+                "models": p.get("models") or [],
+                "model": (p.get("model") or "").strip(),
+                "review_model": (p.get("review_model") or "").strip(),
+                "reasoning_effort": (p.get("reasoning_effort") or "").strip(),
+                "context_window": int(p.get("context_window") or 200000),
+                "max_output_tokens": int(p.get("max_output_tokens") or 32768),
+            }
+            im = p.get("image_models")
+            if isinstance(im, (list, tuple, set)):
+                chosen = set(entry["models"])
+                entry["image_models"] = [m for m in dict.fromkeys(str(x) for x in im)
+                                         if m in chosen]
+            if not entry["base_url"]:
+                raise ValueError("Base URL 不能为空")
+            if entry["auth_mode"] == "env" and not re.fullmatch("[A-Za-z_][A-Za-z0-9_]*",
+                                                                entry["env_key"]):
+                raise ValueError("环境变量名不合法")
+            for other in data["codex"]["providers"]:
+                if other["id"] == pid_new and other["id"] != old_id:
+                    raise ValueError(
+                        "已存在同名供应商「%s」（标识 %s），请在左侧列表直接编辑它，或将新供应商换个名称"
+                        % (other["name"], pid_new))
+            if old_id and old_id != "original":
+                idx = next(i for i, x in enumerate(data["codex"]["providers"])
+                           if x["id"] == old_id)
+                if not entry["api_key"]:
+                    entry["api_key"] = data["codex"]["providers"][idx].get("api_key", "")
+                data["codex"]["providers"][idx] = entry
+            else:
+                data["codex"]["providers"].append(entry)
+            save_data(data)
+            if detect_active() in (old_id, pid_new):
+                apply_provider(entry)
+        return {"ok": True, "id": entry["id"]}
+
+    def _providers_reorder(ids):
+        """按前端传入的 id 顺序重排供应商库。
+
+        供应商库网格（目标管理首页）与 Codex 配置列表共用同一存储顺序，
+        重排后两处展示顺序同步变化；仅调整列表顺序，不改任何供应商内容。
+        """
+        if not isinstance(ids, list):
+            raise ValueError("参数错误：ids 必须为列表")
+        with LOCK:
+            data = load_data()
+            providers = data["codex"]["providers"]
+            want = [str(x) for x in ids]
+            have = [str(p.get("id")) for p in providers]
+            if len(want) != len(have) or len(set(want)) != len(want) or set(want) != set(have):
+                raise ValueError("供应商列表已变化，请刷新后重试")
+            by_id = {str(p.get("id")): p for p in providers}
+            data["codex"]["providers"] = [by_id[i] for i in want]
+            save_data(data)
+        return {"ok": True}
+
     def _api_get(self, path):
         if path == "/api/state":
             self._send(200, _state_json())
@@ -1436,6 +1513,14 @@ def make_server():
         if path == "/api/uninstall":
             self._send(200, _uninstall_cleanup(body.get("restoreOriginal", True)))
             return True
+        if path == "/api/providers/reorder":
+            self._send(200, _providers_reorder(body.get("ids")))
+            return True
+        if path == "/api/provider":
+            # 接管母版保存逻辑：额外持久化 image_models（图片输入开关），
+            # 供 build_catalog_entry 生成 input_modalities 时使用
+            self._send(200, _api_provider_save(body))
+            return True
         if path == "/api/switch":
             active = _switch_provider(body.get("id"))
             self._send(200, {"ok": True, "active": active})
@@ -1443,6 +1528,8 @@ def make_server():
         return False
 
     MY_POST_PATHS = {
+        "/api/provider",
+        "/api/providers/reorder",
         "/api/providers/import",
         "/api/qodercn/import", "/api/qodercn/delete",
         "/api/qoder2/import", "/api/qoder2/delete",
@@ -1597,6 +1684,90 @@ def apply_provider(p):
     elif p.get("env_key") and p.get("api_key"):
         set_user_env(p["env_key"], p["api_key"])
 '''
+
+
+# 母版 build_catalog_entry 的替换源码（repack.py / feature_pack.py 共用）。
+# 修复：母版把所有模型的 input_modalities 写死为 ["text"]，Codex 据此判定
+# 模型不支持图片输入，导致视觉模型（如 glm-5.3-flash）在 Codex 中无法发图。
+# 现按供应商的 image_models（前端按 models.dev 规格表自动识别并可手动切换）
+# 生成 input_modalities；旧数据未携带 image_models 时回退到内置规则自动识别。
+NEW_BUILD_CATALOG_ENTRY_SRC = """
+def build_catalog_entry(model, p):
+    # 模型目录条目；input_modalities 按图片输入能力生成（image_models 优先，缺省自动识别）。
+    # 注意：本函数以模块级代码对象注入 server 模块，自包含、不引用本源码文件的其它符号。
+    vision_hints = (
+        "gpt-4o", "gpt-4.1", "gpt-5", "o3", "o4-",
+        "glm-4v", "glm-4.5v", "glm-4.6v", "glm-5",
+        "gemini-", "claude-", "qwen-vl", "qwen2-vl", "qwen2.5-vl", "qwen3-vl", "qvq",
+        "doubao-vision", "doubao-1.5-vision", "doubao-1-5-vision", "seed-1.6",
+        "kimi-latest", "kimi-vision", "moonshot-v1-8k-vision", "moonshot-v1-32k-vision",
+        "grok-2-vision", "grok-3-vision", "grok-4", "grok-vision",
+        "step-1v", "step-2", "step-3", "ernie-4.5-vl", "hunyuan-vision",
+        "deepseek-vl", "pixtral", "llava", "internvl", "minicpm-v", "yi-vision",
+        "cogvlm", "phi-3.5-vision", "phi-4-multimodal", "abab6.5s", "spark-v",
+    )
+    ctx = int(p.get("context_window") or 200000)
+    max_out = int(p.get("max_output_tokens") or 32768)
+    levels = None
+    override = p.get("reasoning_levels")
+    if override:
+        levels = [{"effort": e, "description": ""} for e in override]
+    else:
+        try:
+            ov_path = os.path.join(os.path.dirname(DATA_FILE), "model_levels.json")
+            if os.path.exists(ov_path):
+                overrides = json.load(open(ov_path, encoding="utf-8"))
+                levels = overrides.get(model) or overrides.get("*") or None
+                if levels and isinstance(levels[0], str):
+                    levels = [{"effort": e, "description": ""} for e in levels]
+        except Exception:
+            levels = None
+    if not levels:
+        if model.lower().startswith("gpt-"):
+            levels = [
+                {"effort": "low", "description": "Fast responses with lighter reasoning"},
+                {"effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks"},
+                {"effort": "high", "description": "Greater reasoning depth for complex problems"},
+                {"effort": "xhigh", "description": "Maximum reasoning depth for the hardest problems"},
+                {"effort": "ultra", "description": "Extended multi-phase reasoning for the most demanding tasks"},
+            ]
+        else:
+            levels = [
+                {"effort": "low", "description": "Fast responses with lighter reasoning"},
+                {"effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks"},
+                {"effort": "high", "description": "Greater reasoning depth for complex problems"},
+            ]
+    im = p.get("image_models")
+    if isinstance(im, dict):
+        image = bool(im.get(model))
+    elif isinstance(im, (list, tuple, set)):
+        image = model in im
+    else:
+        m = (model or "").lower()
+        image = (any(k in m for k in vision_hints)
+                 or bool(re.search(r"-vl|vision|multimodal|omni", m)))
+    mods = ["text"] + (["image"] if image else [])
+    return {
+        "slug": model,
+        "display_name": model,
+        "description": f"{model} via {p['name']}",
+        "input_modalities": mods,
+        "supports_parallel_tool_calls": True,
+        "context_window": ctx,
+        "max_output_tokens": max_out,
+        "default_reasoning_level": "low",
+        "supported_reasoning_levels": levels,
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": True,
+        "priority": 1,
+        "support_verbosity": False,
+        "default_verbosity": "low",
+        "truncation_policy": {"mode": "tokens", "limit": 10000},
+        "experimental_supported_tools": [],
+        "base_instructions": DEFAULT_BASE_INSTRUCTIONS,
+    }
+"""
 
 
 # 母版所有上游请求共用此函数。AgentRouter 的模型接口会检查客户端标识，

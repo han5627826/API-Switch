@@ -93,6 +93,12 @@ def main():
     old_up = next(k for k in server_code.co_consts if isinstance(k, types.CodeType) and k.co_name == "upstream_json")
     new_up = build_replacement_function(_compile_src(feature_backend.NEW_UPSTREAM_JSON_SRC, "upstream_json"), old_up)
     server_code = server_code.replace(co_consts=tuple(new_up if k is old_up else k for k in server_code.co_consts))
+    # build_catalog_entry 替换：input_modalities 支持图片输入
+    # （供应商 image_models 优先，缺省按内置规则自动识别；修复 Codex 无法发图问题）
+    old_bce = next(k for k in server_code.co_consts if isinstance(k, types.CodeType) and k.co_name == "build_catalog_entry")
+    new_bce = build_replacement_function(
+        _compile_src(feature_backend.NEW_BUILD_CATALOG_ENTRY_SRC, "build_catalog_entry"), old_bce)
+    server_code = server_code.replace(co_consts=tuple(new_bce if k is old_bce else k for k in server_code.co_consts))
     ms_src = feature_backend.build_make_server_code(version=a.version, repo="", update_enabled=False,
                                                     brand="API 修改器")
     old_ms = next(k for k in server_code.co_consts if isinstance(k, types.CodeType) and k.co_name == "make_server")
@@ -170,6 +176,16 @@ def main():
         types.FunctionType(ap, g)({"model": "m1", "models": ["m1", "m2"]})
         _c = _json.load(open(_cat, encoding="utf-8"))
         assert list(_c.keys()) == ["models"] and [e["slug"] for e in _c["models"]] == ["m1", "m2"], _c
+    # build_catalog_entry 自检：image_models 显式生效；缺省按内置规则自动识别
+    import os as _os, re as _re
+    _bce = next(k for k in sc2.co_consts if isinstance(k, types.CodeType) and k.co_name == "build_catalog_entry")
+    _g2 = {"os": _os, "json": _json, "re": _re, "DATA_FILE": "x/data.json",
+           "DEFAULT_BASE_INSTRUCTIONS": "X"}
+    _fb = types.FunctionType(_bce, _g2)
+    assert _fb("glm-5.3-flash", {"name": "T", "image_models": ["glm-5.3-flash"]})["input_modalities"] == ["text", "image"]
+    assert _fb("deepseek-v4.1-flash", {"name": "T"})["input_modalities"] == ["text"]
+    assert _fb("glm-5.3-flash", {"name": "T"})["input_modalities"] == ["text", "image"]
+    assert _fb("gpt-5.6-sol", {"name": "T"})["input_modalities"] == ["text", "image"]
     ms = next(k for k in sc2.co_consts if isinstance(k, types.CodeType) and k.co_name == "make_server")
     kids = {k.co_name for k in ms.co_consts if isinstance(k, types.CodeType)}
     need = ['qn_import', 'q2_import', 'zc_import', 'tw_prepare', '_api_get', '_api_post',

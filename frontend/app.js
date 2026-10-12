@@ -197,6 +197,92 @@ function customProviders() {
   return state.providers.filter((p) => p.id !== "original");
 }
 
+/* ---------------- 拖拽排序（供应商库网格 / Codex 配置列表共用） ---------------- */
+function providerOrderIds() {
+  return state.providers.map((p) => p.id);
+}
+
+async function applyProviderOrder(ids) {
+  const before = providerOrderIds().join("\n");
+  if (before === ids.join("\n")) return;
+  const byId = new Map(state.providers.map((p) => [p.id, p]));
+  const next = ids.map((id) => byId.get(id)).filter(Boolean);
+  if (next.length !== state.providers.length) return;
+  state.providers = next;                  // 乐观更新；失败时 refresh 回滚为服务器顺序
+  renderHome();
+  render();
+  const r = await api("/api/providers/reorder", { ids });
+  if (!r || !r.ok) toast((r && r.error) || "排序保存失败", true);
+  await refresh(true);
+}
+
+/* container 内 itemSel 卡片启用 HTML5 拖拽换位；顺序落库后两处列表同步 */
+function bindDragSort(container, itemSel) {
+  if (!container || container._dragSort) return;
+  container._dragSort = true;
+  let dragId = null;
+  const HINTS = ["drop-before", "drop-after", "drop-left", "drop-right"];
+
+  const items = () => [...container.querySelectorAll(itemSel)];
+  const clearHints = () => items().forEach((el) =>
+    el.classList.remove("dragging", ...HINTS));
+
+  /* 指针落点 → 插入目标卡片与方向（reading order：上/左=before，下/右=after） */
+  function hitTest(x, y) {
+    let best = null, bestDist = Infinity;
+    for (const el of items()) {
+      if (el.dataset.pid === dragId) continue;
+      const r = el.getBoundingClientRect();
+      const dx = x - (r.left + r.width / 2), dy = y - (r.top + r.height / 2);
+      const dist = dx * dx + dy * dy;
+      if (dist < bestDist) { bestDist = dist; best = r; best._el = el; }
+    }
+    if (!best) return null;
+    const cy = best.top + best.height / 2, cx = best.left + best.width / 2;
+    const band = best.height * 0.2;
+    let cls;
+    if (Math.abs(y - cy) > band) cls = y < cy ? "drop-before" : "drop-after";
+    else cls = x < cx ? "drop-left" : "drop-right";
+    return { el: best._el, cls, before: cls === "drop-before" || cls === "drop-left" };
+  }
+
+  container.addEventListener("dragstart", (e) => {
+    const item = e.target.closest && e.target.closest(itemSel);
+    if (!item || !container.contains(item)) return;
+    dragId = item.dataset.pid;
+    item.classList.add("dragging");
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      try { e.dataTransfer.setData("text/plain", dragId); } catch (_) { /* IE */ }
+    }
+  });
+  container.addEventListener("dragend", () => { dragId = null; clearHints(); });
+  container.addEventListener("dragover", (e) => {
+    if (!dragId) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    const hit = hitTest(e.clientX, e.clientY);
+    items().forEach((el) => {
+      HINTS.forEach((c) => el.classList.remove(c));
+      if (hit && el === hit.el) el.classList.add(hit.cls);
+    });
+  });
+  container.addEventListener("drop", (e) => {
+    if (!dragId) return;
+    e.preventDefault();
+    const dragged = dragId;
+    const hit = hitTest(e.clientX, e.clientY);
+    let ids = items().map((el) => el.dataset.pid).filter((id) => id && id !== dragged);
+    dragId = null;
+    clearHints();
+    if (!hit) return;
+    const at = ids.indexOf(hit.el.dataset.pid);
+    if (at < 0) return;
+    ids.splice(hit.before ? at : at + 1, 0, dragged);
+    applyProviderOrder(ids);
+  });
+}
+
 function renderHome() {
   renderStats();
   renderProviderGrid();
@@ -224,6 +310,8 @@ function renderProviderGrid() {
     const isActive = p.id === state.active;
     const card = document.createElement("div");
     card.className = "pv-card" + (p.id === selected ? " selected" : "");
+    card.draggable = true;
+    card.dataset.pid = p.id;
     let badge = "";
     if (isActive) badge = '<span class="badge badge-ok">使用中</span>';
     else if (isOriginal) badge = '<span class="badge">原始</span>';
@@ -256,6 +344,7 @@ function renderProviderGrid() {
     if (db) db.onclick = (e) => { e.stopPropagation(); doDelete(p); };
     grid.appendChild(card);
   }
+  bindDragSort(grid, ".pv-card");
 }
 
 function fmtK(n) {
@@ -374,12 +463,29 @@ function providerModels() {
 }
 let providerSel = null;
 
+/* 内置视觉模型识别兜底（规格表未收录时使用），与后端 build_catalog_entry 规则一致 */
+const VISION_HINTS = ["gpt-4o", "gpt-4.1", "gpt-5", "o3", "o4-", "glm-4v", "glm-4.5v",
+  "glm-4.6v", "glm-5", "gemini-", "claude-", "qwen-vl", "qwen2-vl", "qwen2.5-vl",
+  "qwen3-vl", "qvq", "doubao-vision", "doubao-1.5-vision", "doubao-1-5-vision",
+  "seed-1.6", "kimi-latest", "kimi-vision", "moonshot-v1-8k-vision",
+  "moonshot-v1-32k-vision", "grok-2-vision", "grok-3-vision", "grok-4", "grok-vision",
+  "step-1v", "step-2", "step-3", "ernie-4.5-vl", "hunyuan-vision", "deepseek-vl",
+  "pixtral", "llava", "internvl", "minicpm-v", "yi-vision", "cogvlm",
+  "phi-3.5-vision", "phi-4-multimodal", "abab6.5s", "spark-v"];
+
+function modelVision(id) {
+  const hit = lookupLimit(id);
+  if (hit && (hit.flags & 2)) return true;      // models.dev 规格表标记 attachment
+  const s = String(id || "").toLowerCase();
+  return VISION_HINTS.some((k) => s.includes(k)) || /-vl|vision|multimodal|omni/.test(s);
+}
+
 function modelMeta(id) {
   const hit = lookupLimit(id);
   return {
     contextWindow: hit ? hit.ctx : 200000,
     maxOutputTokens: hit && hit.out ? hit.out : 32768,
-    vision: hit ? !!(hit.flags & 2) : false,
+    vision: modelVision(id),
     reasoning: hit ? !!(hit.flags & 1) : false,
   };
 }
@@ -685,6 +791,8 @@ function renderSidebar() {
   for (const p of state.providers) {
     const card = document.createElement("div");
     card.className = "p-card" + (p.id === selected ? " selected" : "");
+    card.draggable = true;
+    card.dataset.pid = p.id;
     const isActive = p.id === state.active;
     card.innerHTML = `
       <div class="p-name"><span>${esc(p.name)}</span>${isActive ? '<span class="badge badge-ok">使用中</span>' : ""}</div>
@@ -692,6 +800,7 @@ function renderSidebar() {
     card.onclick = () => { selected = p.id; renderSidebar(); renderDetail(); };
     box.appendChild(card);
   }
+  bindDragSort(box, ".p-card");
   $("#status-line").innerHTML =
     `<span class="dot ${state.codex_running ? "on" : "off"}"></span>` +
     `Codex ${state.codex_running ? "运行中" : "未运行"} · 当前：<b>${esc(activeName())}</b>`;
@@ -726,6 +835,14 @@ function renderDetail() {
     fr("推理力度", esc(p.reasoning_effort || "跟随模型目录默认"));
     fr("上下文 / 输出", `${p.context_window} / ${p.max_output_tokens} tokens`);
     fr("Review 模型", esc(p.review_model || "-"));
+    const imSet = new Set(p.image_models || []);
+    const imgKnown = Array.isArray(p.image_models);
+    fr("图片输入", (p.models || []).length
+      ? (p.models || []).map((m) => {
+          const on = imgKnown ? imSet.has(m) : modelVision(m);
+          return `<span class="chip mono">${esc(m)}<span class="img-badge ${on ? "on" : "off"}" style="cursor:default">图</span></span>`;
+        }).join("")
+      : "-", true);
     fr("模型列表", (p.models || []).map((m) => `<span class="chip mono">${esc(m)}</span>`).join("") || "-", true);
   }
   d.innerHTML = `
@@ -781,7 +898,11 @@ function openModal(p) {
   limitAuto = true;
   $("#f-limits-hint").textContent = "";
   $("#f-limits-hint").style.cssText = "";
-  draftModels = (p && p.models || []).map((m) => ({ id: m, on: true }));
+  draftModels = (p && p.models || []).map((m) => ({
+    id: m,
+    on: true,
+    image: imageDefault(p, m),
+  }));
   $("#f-model-input").value = "";
   renderModelChips();
   $("#test-result").className = "hidden";
@@ -797,6 +918,12 @@ function syncAuthMode() {
 
 function closeModal() { $("#modal-mask").classList.add("hidden"); }
 
+function imageDefault(p, id) {
+  const im = p && p.image_models;
+  if (Array.isArray(im)) return im.includes(id);   // 已保存过：按保存值
+  return modelVision(id);                          // 旧数据：按规格表/内置规则自动识别
+}
+
 function renderModelChips() {
   const box = $("#model-list");
   box.innerHTML = "";
@@ -806,18 +933,32 @@ function renderModelChips() {
   for (const m of draftModels) {
     const chip = document.createElement("span");
     chip.className = "model-chip" + (m.on ? " on" : "");
-    chip.innerHTML = `${esc(m.id)}<span class="x">✕</span>`;
+    chip.innerHTML = `${esc(m.id)}` +
+      `<span class="img-badge ${m.image ? "on" : "off"}" data-img="1">图</span>` +
+      `<span class="x">✕</span>`;
     chip.title = m.on ? "已选入目录，点击取消选入" : "未选入目录，点击选入";
     chip.onclick = (e) => {
       if (e.target.classList.contains("x")) {
         draftModels = draftModels.filter((x) => x !== m);
+      } else if (e.target.dataset.img) {
+        // 图片输入开关：点「图」切换（支持=默认开，不支持=默认关，可手动改）
+        m.image = !m.image;
       } else {
         m.on = !m.on;
       }
       renderModelChips();
     };
+    const badge = chip.querySelector(".img-badge");
+    badge.title = `图片输入：${m.image ? "已开启" : "已关闭"}（点击切换）`;
     box.appendChild(chip);
   }
+  // 图片输入信息行
+  const info = document.createElement("div");
+  info.className = "muted model-cap-hint";
+  const onCnt = draftModels.filter((m) => m.on).length;
+  const imgCnt = draftModels.filter((m) => m.on && m.image).length;
+  info.textContent = `图片输入：${imgCnt}/${onCnt} 个已开启 · 依据 models.dev 规格表自动识别（支持默认开启，不支持默认关闭），点模型标签上的「图」可手动切换`;
+  box.appendChild(info);
   // 默认/review 模型下拉 = 选中的模型
   const on = draftModels.filter((m) => m.on).map((m) => m.id);
   fillSelect($("#f-model"), on, on[0] || "");
@@ -847,6 +988,7 @@ function collectProvider() {
     env_key: $("#f-env").value.trim(),
     reasoning_effort: $("#f-effort").value,
     models: draftModels.filter((m) => m.on).map((m) => m.id),
+    image_models: draftModels.filter((m) => m.on && m.image).map((m) => m.id),
     model: $("#f-model").value === "(无)" ? "" : $("#f-model").value,
     review_model: $("#f-review").value === "(无)" ? "" : $("#f-review").value,
     context_window: +$("#f-ctx").value || 200000,
@@ -902,7 +1044,7 @@ async function fetchModels() {
   if (r.ok) {
     const known = new Set(draftModels.map((m) => m.id));
     for (const id of r.models) {
-      if (!known.has(id)) draftModels.push({ id, on: draftModels.length === 0 });
+      if (!known.has(id)) draftModels.push({ id, on: draftModels.length === 0, image: modelVision(id) });
     }
     if (!draftModels.some((m) => m.on) && draftModels.length) draftModels[0].on = true;
     renderModelChips();
@@ -915,7 +1057,7 @@ function addManualModel() {
   const id = inp.value.trim();
   if (!id) return;
   if (draftModels.some((m) => m.id === id)) return toast("模型已存在", true);
-  draftModels.push({ id, on: true });
+  draftModels.push({ id, on: true, image: modelVision(id) });
   inp.value = "";
   renderModelChips();
 }

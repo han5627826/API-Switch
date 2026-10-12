@@ -262,6 +262,13 @@ main { flex: 1; min-height: 0; overflow-y: auto; position: relative; z-index: 5;
 .p-card.selected { border-color: var(--accent); background: rgba(99,102,241,.06); }
 .p-card .p-name { font-weight: 600; font-size: 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .p-card .p-url { color: var(--faint); font-size: 12.5px; margin-top: 3px; word-break: break-all; }
+
+/* 拖拽排序（供应商库网格 / 配置列表共用） */
+.pv-card.dragging, .p-card.dragging { opacity: .45; border-style: dashed; cursor: grabbing; }
+.pv-card.drop-before, .p-card.drop-before { box-shadow: 0 -3px 0 var(--accent); }
+.pv-card.drop-after,  .p-card.drop-after  { box-shadow: 0 3px 0 var(--accent); }
+.pv-card.drop-left,   .p-card.drop-left   { box-shadow: -3px 0 0 var(--accent); }
+.pv-card.drop-right,  .p-card.drop-right  { box-shadow: 3px 0 0 var(--accent); }
 .side-footer { padding: 10px 16px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--faint); }
 
 /* 详情区 */
@@ -472,4 +479,34 @@ main { flex: 1; min-height: 0; overflow-y: auto; position: relative; z-index: 5;
   .console-right { flex-wrap: wrap; gap: 18px; }
   .fields { grid-template-columns: 1fr; }
   .grid2 { grid-template-columns: 1fr; }
+}
+
+
+/* ---------- 图片输入徽标（模型能力识别） ---------- */
+.img-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 16px;
+  vertical-align: 1px;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: transparent;
+}
+.img-badge.on {
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.55);
+  color: #16a34a;
+}
+.img-badge.off {
+  opacity: 0.55;
+}
+.model-cap-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
 }
